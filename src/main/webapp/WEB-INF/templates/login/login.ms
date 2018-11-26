@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-ng-app="adminApplication" data-ng-csp>
+<html lang="en" data-ng-app="adminApplication" data-ng-csp {{#devModeEnabled}}dev-mode-enabled{{/devModeEnabled}} {{#prodModeEnabled}}prod-mode-enabled{{/prodModeEnabled}}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,7 +7,13 @@
     <link rel="stylesheet" href="{{request.contextPath}}/resources/bower_components/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="{{request.contextPath}}/resources/css/admin.css" />
     <link rel="stylesheet" href="{{request.contextPath}}/resources/bower_components/components-font-awesome/css/font-awesome.min.css" />
-    <title>Authentication</title>
+    {{#demoModeEnabled}}
+        <title>Alf.io Demo: Open Source Event Ticketing System</title>
+        <meta name="description" content="You can try Alf.io for free. Use a demo version of Alf.io's ticketing system to experience this great way to control your event and your sensitive attendee data!">
+    {{/demoModeEnabled}}
+    {{^demoModeEnabled}}
+        <title>Authentication</title>
+    {{/demoModeEnabled}}
     {{#hasRecaptchaApiKey}}
         <script src='https://www.google.com/recaptcha/api.js'></script>
     {{/hasRecaptchaApiKey}}
@@ -58,5 +64,6 @@
             </div>
         </div>
     </div>
+    <script src="{{request.contextPath}}/resources/js/common/warning-msg.js" async="true"></script>
 </body>
 </html>

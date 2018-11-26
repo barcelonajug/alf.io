@@ -39,6 +39,7 @@ public class EventModification {
     private final String websiteUrl;
     private final String externalUrl;
     private final String termsAndConditionsUrl;
+    private final String privacyPolicyUrl;
     private final String imageUrl;
     private final String fileBlobId;
     private final String shortName;
@@ -53,7 +54,7 @@ public class EventModification {
     private final DateTimeModification end;
     private final BigDecimal regularPrice;
     private final String currency;
-    private final int availableSeats;
+    private final Integer availableSeats;
     private final BigDecimal vatPercentage;
     private final boolean vatIncluded;
     private final List<PaymentProxy> allowedPaymentProxies;
@@ -71,6 +72,7 @@ public class EventModification {
                              @JsonProperty("websiteUrl") String websiteUrl,
                              @JsonProperty("external") String externalUrl,
                              @JsonProperty("termsAndConditionsUrl") String termsAndConditionsUrl,
+                             @JsonProperty("privacyPolicyUrl") String privacyPolicyUrl,
                              @JsonProperty("imageUrl") String imageUrl,
                              @JsonProperty("fileBlobId") String fileBlobId,
                              @JsonProperty("shortName") String shortName,
@@ -85,13 +87,13 @@ public class EventModification {
                              @JsonProperty("end") DateTimeModification end,
                              @JsonProperty("regularPrice") BigDecimal regularPrice,
                              @JsonProperty("currency") String currency,
-                             @JsonProperty("availableSeats") int availableSeats,
+                             @JsonProperty("availableSeats") Integer availableSeats,
                              @JsonProperty("vatPercentage") BigDecimal vatPercentage,
                              @JsonProperty("vatIncluded") boolean vatIncluded,
                              @JsonProperty("allowedPaymentProxies") List<PaymentProxy> allowedPaymentProxies,
                              @JsonProperty("ticketCategories") List<TicketCategoryModification> ticketCategories,
                              @JsonProperty("freeOfCharge") boolean freeOfCharge,
-                             @JsonProperty("geoLocation") LocationDescriptor locationDescriptor,
+                             @JsonProperty("geolocation") LocationDescriptor locationDescriptor,
                              @JsonProperty("locales") int locales,
                              @JsonProperty("ticketFields") List<AdditionalField> ticketFields,
                              @JsonProperty("additionalServices") List<AdditionalService> additionalServices) {
@@ -100,6 +102,7 @@ public class EventModification {
         this.websiteUrl = websiteUrl;
         this.externalUrl = externalUrl;
         this.termsAndConditionsUrl = termsAndConditionsUrl;
+        this.privacyPolicyUrl = privacyPolicyUrl;
         this.imageUrl = imageUrl;
         this.fileBlobId = fileBlobId;
         this.shortName = shortName;
@@ -145,15 +148,22 @@ public class EventModification {
         return eventType == Event.EventType.INTERNAL;
     }
 
-
-    public interface WithRestrictedValues {
-
-        List<String> getRestrictedValuesAsString();
+    public interface WithType {
         String getType();
     }
 
+    public interface WithRestrictedValues extends WithType {
+        List<String> getRestrictedValuesAsString();
+        List<String> getDisabledValuesAsString();
+    }
+
+
+    public interface WithLinkedCategories extends WithType {
+        List<Integer> getLinkedCategoriesIds();
+    }
+
     @Getter
-    public static class AdditionalField implements WithRestrictedValues {
+    public static class AdditionalField implements WithRestrictedValues, WithLinkedCategories {
         private final int order;
         private final String name;
         private final String type;
@@ -166,6 +176,7 @@ public class EventModification {
         // locale -> description
         private final Map<String, Description> description;
         private final AdditionalService linkedAdditionalService;
+        private final List<Integer> linkedCategoryIds;
 
 
         @JsonCreator
@@ -177,7 +188,8 @@ public class EventModification {
                                @JsonProperty("maxLength") Integer maxLength,
                                @JsonProperty("restrictedValues") List<RestrictedValue> restrictedValues,
                                @JsonProperty("description") Map<String, Description> description,
-                               @JsonProperty("forAdditionalService") AdditionalService linkedAdditionalService) {
+                               @JsonProperty("forAdditionalService") AdditionalService linkedAdditionalService,
+                               @JsonProperty("categoryIds") List<Integer> linkedCategoryIds) {
             this.order = order;
             this.name = name;
             this.type = type;
@@ -187,35 +199,62 @@ public class EventModification {
             this.restrictedValues = restrictedValues;
             this.description = description;
             this.linkedAdditionalService = linkedAdditionalService;
+            this.linkedCategoryIds = linkedCategoryIds;
         }
 
         @Override
         public List<String> getRestrictedValuesAsString() {
-            return restrictedValues == null ? null : restrictedValues.stream().map(RestrictedValue::getValue).collect(Collectors.toList());
+            return restrictedValues == null ? Collections.emptyList() : restrictedValues.stream().map(RestrictedValue::getValue).collect(Collectors.toList());
+        }
+
+        @Override
+        public List<String> getDisabledValuesAsString() {
+            return Collections.emptyList();
+        }
+
+        @Override
+        public List<Integer> getLinkedCategoriesIds() {
+            return linkedCategoryIds == null ? Collections.emptyList() : linkedCategoryIds;
         }
     }
 
     @Getter
-    public static class UpdateAdditionalField implements WithRestrictedValues {
+    public static class UpdateAdditionalField implements WithRestrictedValues, WithLinkedCategories {
         private final String type;
         private final boolean required;
         private final List<String> restrictedValues;
         private final Map<String, TicketFieldDescriptionModification> description;
+        private final List<String> disabledValues;
+        private final List<Integer> linkedCategoriesIds;
 
         @JsonCreator
         public UpdateAdditionalField(@JsonProperty("type") String type,
                                      @JsonProperty("required") boolean required,
                                      @JsonProperty("restrictedValues") List<String> restrictedValues,
-                                     @JsonProperty("description") Map<String, TicketFieldDescriptionModification> description) {
+                                     @JsonProperty("disabledValues") List<String> disabledValues,
+                                     @JsonProperty("description") Map<String, TicketFieldDescriptionModification> description,
+                                     @JsonProperty("categoryIds") List<Integer> linkedCategoriesIds) {
             this.type = type;
             this.required = required;
             this.restrictedValues = restrictedValues;
+            this.disabledValues = disabledValues;
             this.description = description;
+            this.linkedCategoriesIds = linkedCategoriesIds;
         }
 
         @Override
         public List<String> getRestrictedValuesAsString() {
-            return restrictedValues;
+            return restrictedValues == null ? Collections.emptyList() : restrictedValues;
+        }
+
+        @Override
+        public List<String> getDisabledValuesAsString() {
+            return disabledValues == null ? Collections.emptyList() : disabledValues;
+        }
+
+        @Override
+        public List<Integer> getLinkedCategoriesIds() {
+            return linkedCategoriesIds == null ? Collections.emptyList() : linkedCategoriesIds;
         }
     }
 
@@ -241,9 +280,11 @@ public class EventModification {
     @Getter
     public static class RestrictedValue {
         private final String value;
+        private final boolean enabled;
         @JsonCreator
-        public RestrictedValue(@JsonProperty("value") String value) {
+        public RestrictedValue(@JsonProperty("value") String value, @JsonProperty("enabled") Boolean enabled) {
             this.value = value;
+            this.enabled = enabled != null ? enabled : true;
         }
     }
 

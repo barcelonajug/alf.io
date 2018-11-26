@@ -25,15 +25,15 @@ import java.util.Set;
 @QueryRepository
 public interface AuthorityRepository {
 
-    String checkRole = "select exists(select * from authority where username = :username and role in (:roles)) as res";
-    @Query(checkRole)
-    @QueriesOverride({
-        @QueryOverride(value = checkRole + " from (values(0))", db = "HSQLDB")
-    })
+
+    @Query("select exists(select * from authority where username = :username and role in (:roles)) as res")
     boolean checkRole(@Bind("username") String username, @Bind("roles") Set<String> roles);
 
     @Query("SELECT * from authority where username = :username")
     List<Authority> findGrantedAuthorities(@Bind("username") String username);
+
+    @Query("SELECT role from authority where username = :username order by role")
+    List<String> findRoles(@Bind("username") String username);
 
     @Query("INSERT INTO authority(username, role) VALUES (:username, :role)")
     int create(@Bind("username") String username, @Bind("role") String role);

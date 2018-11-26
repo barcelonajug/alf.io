@@ -48,30 +48,20 @@ public class IntegrationTestUtil {
     public static final int AVAILABLE_SEATS = 20;
 
 
-    private static final Map<String, Map<String, String>> DB_CONF = new HashMap<>();
+    public static final Map<String, Map<String, String>> DB_CONF = new HashMap<>();
     public static final Map<String, String> DESCRIPTION = Collections.singletonMap("en", "desc");
 
     static {
-        DB_CONF.put("HSQLDB", c("HSQLDB", "org.hsqldb.jdbcDriver", "jdbc:hsqldb:mem:alfio", "sa", "", "SELECT 1 FROM INFORMATION_SCHEMA.SYSTEM_USERS"));
-        DB_CONF.put("PGSQL", c("PGSQL", "org.postgresql.Driver", "jdbc:postgresql://localhost:5432/alfio", "postgres", "password", "SELECT 1"));
-        DB_CONF.put("PGSQL-TRAVIS", c("PGSQL", "org.postgresql.Driver", "jdbc:postgresql://localhost:5432/alfio", "postgres", "", "SELECT 1"));
-        DB_CONF.put("MYSQL", c("MYSQL", "com.mysql.jdbc.Driver", "jdbc:mysql://localhost:3306/alfio", "root", "", "SELECT 1"));
+        DB_CONF.put("PGSQL", generateDBConfig("jdbc:postgresql://localhost:5432/alfio", "postgres", "password"));
+        DB_CONF.put("PGSQL-TRAVIS", generateDBConfig("jdbc:postgresql://localhost:5432/alfio", "postgres", ""));
     }
 
-    private static Map<String, String> c(String dialect, String driver, String url, String username, String password, String validationQuery) {
+    public static Map<String, String> generateDBConfig(String url, String username, String password) {
         Map<String, String> c = new HashMap<>();
-        c.put("datasource.dialect", dialect);
-        c.put("datasource.driver", driver);
         c.put("datasource.url", url);
         c.put("datasource.username", username);
         c.put("datasource.password", password);
-        c.put("datasource.validationQuery", validationQuery);
         return c;
-    }
-
-    public static void initSystemProperties() {
-        String dialect = System.getProperty("dbenv", "HSQLDB");
-        DB_CONF.get(dialect).forEach(System::setProperty);
     }
 
     public static void ensureMinimalConfiguration(ConfigurationRepository configurationRepository) {
@@ -93,6 +83,15 @@ public class IntegrationTestUtil {
                                                 UserManager userManager,
                                                 EventManager eventManager,
                                                 EventRepository eventRepository) {
+        return initEvent(categories, organizationRepository, userManager, eventManager, eventRepository, null);
+    }
+
+    public static Pair<Event, String> initEvent(List<TicketCategoryModification> categories,
+                                                OrganizationRepository organizationRepository,
+                                                UserManager userManager,
+                                                EventManager eventManager,
+                                                EventRepository eventRepository,
+                                                List<EventModification.AdditionalService> additionalServices) {
 
         String organizationName = UUID.randomUUID().toString();
         String username = UUID.randomUUID().toString();
@@ -110,12 +109,12 @@ public class IntegrationTestUtil {
         desc.put("it", "muh description");
         desc.put("de", "muh description");
 
-        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", "url", null,
+        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", "privacy","url", null,
                 eventName, "event display name", organization.getId(),
                 "muh location", "0.0", "0.0", ZoneId.systemDefault().getId(), desc,
                 new DateTimeModification(LocalDate.now().plusDays(5), LocalTime.now()),
                 new DateTimeModification(expiration.toLocalDate(), expiration.toLocalTime()),
-                BigDecimal.TEN, "CHF", AVAILABLE_SEATS, BigDecimal.ONE, true, Collections.singletonList(PaymentProxy.OFFLINE), categories, false, new LocationDescriptor("","","",""), 7, null, null);
+                BigDecimal.TEN, "CHF", AVAILABLE_SEATS, BigDecimal.ONE, true, Collections.singletonList(PaymentProxy.OFFLINE), categories, false, new LocationDescriptor("","","",""), 7, null, additionalServices);
         eventManager.createEvent(em);
         Event event = eventManager.getSingleEvent(eventName, username);
         Assert.assertEquals(AVAILABLE_SEATS, eventRepository.countExistingTickets(event.getId()).intValue());
@@ -123,7 +122,12 @@ public class IntegrationTestUtil {
     }
 
     public static void initAdminUser(UserRepository userRepository, AuthorityRepository authorityRepository) {
-        userRepository.create(UserManager.ADMIN_USERNAME, "", "The", "Administrator", "admin@localhost", true, User.Type.INTERNAL);
+        userRepository.create(UserManager.ADMIN_USERNAME, "", "The", "Administrator", "admin@localhost", true, User.Type.INTERNAL, null, null);
         authorityRepository.create(UserManager.ADMIN_USERNAME, Role.ADMIN.getRoleName());
+    }
+
+    public static void removeAdminUser(UserRepository userRepository, AuthorityRepository authorityRepository) {
+        authorityRepository.revokeAll(UserManager.ADMIN_USERNAME);
+        userRepository.deleteUser(userRepository.findIdByUserName(UserManager.ADMIN_USERNAME).get());
     }
 }

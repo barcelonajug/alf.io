@@ -320,7 +320,7 @@
             controller: function EditEventHeaderController($scope, $stateParams, LocationService, FileUploadService, UtilsService, EventService) {
                 if(!angular.isDefined($scope.fullEditMode)) {
                     var source = _.pick($scope.eventObj, ['id','shortName', 'displayName', 'organizationId', 'location',
-                        'description', 'websiteUrl', 'externalUrl', 'termsAndConditionsUrl', 'imageUrl', 'fileBlobId', 'formattedBegin','type',
+                        'description', 'websiteUrl', 'externalUrl', 'termsAndConditionsUrl', 'privacyPolicyUrl', 'imageUrl', 'fileBlobId', 'formattedBegin','type',
                         'formattedEnd', 'geolocation', 'locales']);
                     angular.extend($scope.obj, source);
                     var beginDateTime = moment(source['formattedBegin']);
@@ -436,9 +436,7 @@
 
                 $scope.$watch('droppedFile', function (droppedFile) {
                     if(angular.isDefined(droppedFile)) {
-                        if(droppedFile === null) {
-                            alert('File drag&drop is not working, please click on the element and select the file.')
-                        } else {
+                        if(droppedFile !== null) {
                             $scope.imageDropped([droppedFile]);
                         }
                     }
@@ -450,7 +448,7 @@
                         $scope.$applyAsync(function() {
                             var imageBase64 = e.target.result;
                             $scope.imageBase64 = imageBase64;
-                            FileUploadService.upload({file : imageBase64.substring(imageBase64.indexOf('base64,') + 7), type : files[0].type, name : files[0].name}).success(function(imageId) {
+                            FileUploadService.uploadImageWithResize({file : imageBase64.substring(imageBase64.indexOf('base64,') + 7), type : files[0].type, name : files[0].name}).success(function(imageId) {
                                 $scope.obj.fileBlobId = imageId;
                             })
                         })
@@ -460,12 +458,16 @@
                 		alert('Your image not uploaded correctly.Please upload the image again');
 	                } else if (!((files[0].type == 'image/png') || (files[0].type == 'image/jpeg'))) {
 	                	alert('only png or jpeg files are accepted');
-	                } else if (files[0].size > 1024000) {
-	                	alert('Image size exceeds the allowable limit 1MB');
+	                } else if (files[0].size > (1024 * 200)) {
+	                	alert('Image size exceeds the allowable limit 200KB');
 	                } else {
 	                	reader.readAsDataURL(files[0]);
 	                }
                 };
+
+                $scope.isObjectEmpty = function(obj) {
+                    return !obj || Object.keys(obj).length === 0;
+                }
             }
         }
     });
@@ -568,8 +570,21 @@
                     $scope.helpAccessCodeCollapse = !$scope.helpAccessCodeCollapse;
                 };
 
-                $scope.customCheckInCollapsed = true;
-                $scope.customValidityCollapsed = true;
+                var hasCustomCheckIn = function(ticketCategory) {
+                    return ticketCategory.formattedValidCheckInFrom ||
+                        ticketCategory.validCheckInFrom ||
+                        ticketCategory.formattedValidCheckInTo ||
+                        ticketCategory.validCheckInTo;
+                };
+
+                var hasCustomTicketValidity = function(ticketCategory) {
+                    return ticketCategory.formattedValidityStart||
+                        ticketCategory.ticketValidityStart ||
+                        ticketCategory.formattedValidityEnd ||
+                        ticketCategory.ticketValidityEnd;
+                };
+
+                $scope.advancedOptionsCollapsed = !hasCustomCheckIn($scope.ticketCategory) && !hasCustomTicketValidity($scope.ticketCategory);
             }
         };
     });
@@ -890,13 +905,21 @@
                                 EventService.exportAttendees(ctrl.event);
                             };
                             ctrl.downloadSponsorsScan = function() {
-                                $window.open($window.location.pathname+"/api/events/"+ctrl.event.shortName+"/sponsor-scan/export.csv");
+                                var pathName = $window.location.pathname;
+                                if(!pathName.endsWith("/")) {
+                                    pathName = pathName + "/";
+                                }
+                                $window.open(pathName+"api/events/"+ctrl.event.shortName+"/sponsor-scan/export");
                             };
                             ctrl.downloadInvoices = function() {
                                 EventService.countInvoices(ctrl.event.shortName).then(function (res) {
                                     var count = res.data;
                                     if(count > 0) {
-                                        $window.open($window.location.pathname+"/api/events/"+ctrl.event.shortName+"/all-invoices");
+                                        var pathName = $window.location.pathname;
+                                        if(!pathName.endsWith("/")) {
+                                            pathName = pathName + "/";
+                                        }
+                                        $window.open(pathName+"api/events/"+ctrl.event.shortName+"/all-invoices");
                                     } else {
                                         NotificationHandler.showInfo("No invoices have been found.");
                                     }
@@ -1016,6 +1039,19 @@
                 }
             }
         };
-    }])
+    }]);
+
+    directives.directive('languageFlag', function() {
+        return {
+            restrict: 'E',
+            scope: {
+                lang: '@'
+            },
+            controller: function($scope) {
+                $scope.flag = $scope.lang === 'en' ? 'gb' : $scope.lang;
+            },
+            template: '<img class="img-center" ng-src="../resources/images/flags/{{flag}}.gif">'
+        };
+    })
     
 })();

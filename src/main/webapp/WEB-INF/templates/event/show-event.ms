@@ -19,10 +19,22 @@
     </div>
 </div>
 
-<div class="wizard wMarginBottom wMarginTop center">
-    <a class="current"><span class="badge badge-inverse">1</span> {{#i18n}}breadcrumb.step1{{/i18n}}</a>
-    <a><span class="badge">2</span> <span class="hidden-xs">{{#i18n}}breadcrumb.step2{{/i18n}}</span></a>
-    <a><span class="badge">3</span> <span class="hidden-xs">{{#i18n}}breadcrumb.step3{{/i18n}}</span></a>
+<div class="wizard2 center text-muted">
+    <div class="wizard2-current">
+        <div><span class="badge">1</span><span>{{#i18n}}breadcrumb.step1{{/i18n}}</span></div>
+        <div class="wizard2-line"></div>
+    </div>
+    <div>
+        <div><span class="badge">2</span><span>{{#i18n}}breadcrumb.step2{{/i18n}}</span></div>
+        <div class="wizard2-line"></div>
+    </div>
+    <div>
+        <div><span class="badge">3</span><span>{{#i18n}}breadcrumb.step3{{#event.free}}.free{{/event.free}}{{/i18n}}</span></div>
+        <div class="wizard2-line"></div>
+    </div>
+    <div>
+        <div><span class="badge">4</span><span>{{#i18n}}breadcrumb.step4{{/i18n}}</span></div>
+    </div>
 </div>
 
 <h2>{{#i18n}}show-event.tickets{{/i18n}}</h2>
@@ -75,6 +87,14 @@
                         <option value="{{language}}">{{displayLanguage}}</option>
                     {{/availableLanguages}}
                 </select>
+                {{#event.privacyPolicyLinkOrNull}}
+                <div class="checkbox wMarginTop wMarginBottom">
+                    <label>
+                        <input type="checkbox" required name="privacyPolicyAccepted" value="true">
+                        {{#i18n}}reservation-page.privacy.prefix{{/i18n}} <a href="{{event.privacyPolicyLinkOrNull}}" target="_blank">{{#i18n}}reservation-page.privacy.link.text{{/i18n}}</a>{{#i18n}}reservation-page.privacy.suffix{{/i18n}}
+                    </label>
+                </div>
+                {{/event.privacyPolicyLinkOrNull}}
                 <div class="checkbox">
                     <label>
                         <input type="checkbox" required name="termAndConditionsAccepted" aria-required="true">
@@ -95,12 +115,6 @@
 {{/displayWaitingQueueForm}}
 
 <form method="post" action="{{request.contextPath}}/event/{{event.shortName}}/reserve-tickets" class="form-horizontal">
-{{^validPaymentMethodAvailable}}
-    <div class="alert alert-warning">
-        <h3>{{#i18n}}show-event.offline-payment-not-available{{/i18n}}</h3>
-    </div>
-{{/validPaymentMethodAvailable}}
-{{#validPaymentMethodAvailable}}
     <ul class="list-group">
     {{#ticketCategories}}
         {{> /event/ticket-category.ms }}
@@ -194,7 +208,9 @@
     </div>
 </div>
 {{/hasAccessPromotions}}
-{{/validPaymentMethodAvailable}}
+{{#captchaForTicketSelectionEnabled}}
+    <div class="show-event g-recaptcha" data-sitekey="{{recaptchaApiKey}}"></div>
+{{/captchaForTicketSelectionEnabled}}
     <hr/>
 
     <input type="hidden" name="{{_csrf.parameterName}}" value="{{_csrf.token}}">
@@ -215,4 +231,9 @@
 {{/displayWaitingQueueForm}}
 <script src="{{request.contextPath}}/resources/bower_components/bootstrap/dist/js/bootstrap.min.js"></script>
 <script src="{{request.contextPath}}/resources/js/event/bootstrap-handler.js"></script>
+
+{{#captchaForTicketSelectionEnabled}}
+<script src="https://www.google.com/recaptcha/api.js" async defer></script>
+{{/captchaForTicketSelectionEnabled}}
+
 {{>/event/page-bottom}}

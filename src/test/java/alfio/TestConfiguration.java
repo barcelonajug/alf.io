@@ -16,19 +16,81 @@
  */
 package alfio;
 
+import alfio.config.support.PlatformProvider;
+import alfio.test.util.IntegrationTestUtil;
+import com.zaxxer.hikari.HikariDataSource;
+import org.apache.commons.io.FileUtils;
 import org.springframework.beans.factory.config.PropertyPlaceholderConfigurer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.ByteArrayResource;
+import ru.yandex.qatools.embed.postgresql.EmbeddedPostgres;
 
+import javax.annotation.PreDestroy;
+import javax.sql.DataSource;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.Properties;
 
+import static ru.yandex.qatools.embed.postgresql.distribution.Version.Main.PRODUCTION;
+
 @Configuration
 public class TestConfiguration {
+
+    private EmbeddedPostgres postgres;
+
+    @Bean
+    @Profile("!travis")
+    public PlatformProvider getCloudProvider(EmbeddedPostgres postgres) {
+        IntegrationTestUtil.generateDBConfig(postgres.getConnectionUrl().orElseThrow(IllegalArgumentException::new), EmbeddedPostgres.DEFAULT_USER, EmbeddedPostgres.DEFAULT_PASSWORD)
+            .forEach(System::setProperty);
+        return PlatformProvider.DEFAULT;
+    }
+
+    @Bean
+    @Profile("!travis")
+    public DataSource getDataSource(EmbeddedPostgres postgres) {
+        HikariDataSource dataSource = new HikariDataSource();
+        dataSource.setJdbcUrl(postgres.getConnectionUrl().orElseThrow(IllegalArgumentException::new));
+        dataSource.setUsername(EmbeddedPostgres.DEFAULT_USER);
+        dataSource.setPassword(EmbeddedPostgres.DEFAULT_PASSWORD);
+        dataSource.setDriverClassName("org.postgresql.Driver");
+        dataSource.setMaximumPoolSize(5);
+        return dataSource;
+    }
+
+    @Bean
+    @Profile("!travis")
+    public EmbeddedPostgres postgres() throws IOException {
+        Path pgsqlPath = Paths.get(".", "alfio-itest");
+        Files.createDirectories(pgsqlPath);
+        Path tmpDataDir = Files.createTempDirectory(pgsqlPath, "alfio-data");
+        postgres = new EmbeddedPostgres(PRODUCTION, tmpDataDir.normalize().toAbsolutePath().toString());
+        postgres.start(EmbeddedPostgres.cachedRuntimeConfig(Paths.get(System.getProperty("java.io.tmpdir"), "pgembed")));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            try {
+                FileUtils.deleteDirectory(tmpDataDir.normalize().toAbsolutePath().toFile());
+            } catch (IOException e) {
+            }
+        }));
+        return postgres;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        if (postgres != null) {
+            postgres.stop();
+        }
+    }
+
+
     @Bean
     public static PropertyPlaceholderConfigurer propConfig() {
         Properties properties = new Properties();

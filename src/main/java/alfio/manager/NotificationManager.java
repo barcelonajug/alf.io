@@ -18,7 +18,6 @@ package alfio.manager;
 
 import alfio.controller.support.TemplateProcessor;
 import alfio.manager.support.CustomMessageManager;
-import alfio.manager.support.PDFTemplateGenerator;
 import alfio.manager.support.PartialTicketTextGenerator;
 import alfio.manager.support.TextTemplateGenerator;
 import alfio.manager.system.ConfigurationManager;
@@ -44,6 +43,7 @@ import org.springframework.context.MessageSource;
 import org.springframework.security.crypto.codec.Hex;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.io.ByteArrayOutputStream;
@@ -55,6 +55,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -90,7 +91,10 @@ public class NotificationManager {
                                TemplateManager templateManager,
                                TicketReservationRepository ticketReservationRepository,
                                TicketCategoryRepository ticketCategoryRepository,
-                               PassBookManager passBookManager) {
+                               PassBookManager passBookManager,
+                               TicketRepository ticketRepository,
+                               TicketFieldRepository ticketFieldRepository,
+                               AdditionalServiceItemRepository additionalServiceItemRepository) {
         this.messageSource = messageSource;
         this.mailer = mailer;
         this.emailMessageRepository = emailMessageRepository;
@@ -108,10 +112,17 @@ public class NotificationManager {
         attachmentTransformer.put(Mailer.AttachmentIdentifier.INVOICE_PDF, receiptOrInvoiceFactory(eventRepository,
             payload -> TemplateProcessor.buildInvoicePdf(payload.getLeft(), fileUploadManager, payload.getMiddle(), templateManager, payload.getRight())));
         attachmentTransformer.put(Mailer.AttachmentIdentifier.PASSBOOK, passBookManager::getPassBook);
-        attachmentTransformer.put(Mailer.AttachmentIdentifier.TICKET_PDF, generateTicketPDF(eventRepository, organizationRepository, configurationManager, fileUploadManager, templateManager, ticketReservationRepository));
+        Function<Ticket, List<TicketFieldConfigurationDescriptionAndValue>> retrieveFieldValues = EventUtil.retrieveFieldValues(ticketRepository, ticketFieldRepository, additionalServiceItemRepository);
+        attachmentTransformer.put(Mailer.AttachmentIdentifier.TICKET_PDF, generateTicketPDF(eventRepository, organizationRepository, configurationManager, fileUploadManager, templateManager, ticketReservationRepository, retrieveFieldValues));
     }
 
-    private static Function<Map<String, String>, byte[]> generateTicketPDF(EventRepository eventRepository, OrganizationRepository organizationRepository, ConfigurationManager configurationManager, FileUploadManager fileUploadManager, TemplateManager templateManager, TicketReservationRepository ticketReservationRepository) {
+    private static Function<Map<String, String>, byte[]> generateTicketPDF(EventRepository eventRepository,
+                                                                           OrganizationRepository organizationRepository,
+                                                                           ConfigurationManager configurationManager,
+                                                                           FileUploadManager fileUploadManager,
+                                                                           TemplateManager templateManager,
+                                                                           TicketReservationRepository ticketReservationRepository,
+                                                                           Function<Ticket, List<TicketFieldConfigurationDescriptionAndValue>> retrieveFieldValues) {
         return (model) -> {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             Ticket ticket = Json.fromJson(model.get("ticket"), Ticket.class);
@@ -120,9 +131,8 @@ public class NotificationManager {
                 TicketCategory ticketCategory = Json.fromJson(model.get("ticketCategory"), TicketCategory.class);
                 Event event = eventRepository.findById(ticket.getEventId());
                 Organization organization = organizationRepository.getById(Integer.valueOf(model.get("organizationId"), 10));
-                PDFTemplateGenerator pdfTemplateGenerator = TemplateProcessor.buildPDFTicket(Locale.forLanguageTag(ticket.getUserLanguage()), event, reservation,
-                    ticket, ticketCategory, organization, templateManager, fileUploadManager, configurationManager.getShortReservationID(event, ticket.getTicketsReservationId()));
-                pdfTemplateGenerator.generate().createPDF(baos);
+                TemplateProcessor.renderPDFTicket(Locale.forLanguageTag(ticket.getUserLanguage()), event, reservation,
+                    ticket, ticketCategory, organization, templateManager, fileUploadManager, configurationManager.getShortReservationID(event, ticket.getTicketsReservationId()), baos, retrieveFieldValues);
             } catch (IOException e) {
                 log.warn("was not able to generate ticket pdf for ticket with id" + ticket.getId(), e);
             }
@@ -235,32 +245,39 @@ public class NotificationManager {
         return emailMessageRepository.findByEventIdAndMessageId(eventId, messageId);
     }
 
-    void sendWaitingMessages() {
+    @Transactional
+    public int sendWaitingMessages() {
         Date now = new Date();
+
+        emailMessageRepository.setToRetryOldInProcess(DateUtils.addHours(now, -1));
+
+        AtomicInteger counter = new AtomicInteger();
+
         eventRepository.findAllActiveIds(ZonedDateTime.now(UTC))
             .stream()
             .flatMap(id -> emailMessageRepository.loadIdsWaitingForProcessing(id, now).stream())
             .distinct()
-            .forEach(this::processMessage);
+            .forEach((messageId) -> counter.addAndGet(processMessage(messageId)));
+        return counter.get();
     }
 
-    private void processMessage(int messageId) {
+    private int processMessage(int messageId) {
         EmailMessage message = emailMessageRepository.findById(messageId);
         int eventId = message.getEventId();
         int organizationId = eventRepository.findOrganizationIdByEventId(eventId);
         if(message.getAttempts() >= configurationManager.getIntConfigValue(Configuration.from(organizationId, eventId, ConfigurationKeys.MAIL_ATTEMPTS_COUNT), 10)) {
             tx.execute(status -> emailMessageRepository.updateStatusAndAttempts(messageId, ERROR.name(), message.getAttempts(), Arrays.asList(IN_PROCESS.name(), WAITING.name(), RETRY.name())));
             log.warn("Message with id " + messageId + " will be discarded");
-            return;
+            return 0;
         }
 
 
         try {
             int result = tx.execute(status -> emailMessageRepository.updateStatus(message.getEventId(), message.getChecksum(), IN_PROCESS.name(), Arrays.asList(WAITING.name(), RETRY.name())));
             if(result > 0) {
-                tx.execute(status -> {
+                return tx.execute(status -> {
                     sendMessage(message);
-                    return null;
+                    return 1;
                 });
             } else {
                 log.debug("no messages have been updated on DB for the following criteria: eventId: {}, checksum: {}", message.getEventId(), message.getChecksum());
@@ -269,6 +286,7 @@ public class NotificationManager {
             tx.execute(status -> emailMessageRepository.updateStatusAndAttempts(message.getId(), RETRY.name(), DateUtils.addMinutes(new Date(), message.getAttempts() + 1), message.getAttempts() + 1, Arrays.asList(IN_PROCESS.name(), WAITING.name(), RETRY.name())));
             log.warn("could not send message: ",e);
         }
+        return 0;
     }
 
     private void sendMessage(EmailMessage message) {

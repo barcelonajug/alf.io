@@ -18,8 +18,6 @@ package alfio.config;
 
 import alfio.util.DefaultExceptionHandler;
 import lombok.extern.log4j.Log4j2;
-import org.apache.commons.lang3.ClassUtils;
-import org.apache.commons.lang3.reflect.MethodUtils;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -38,7 +36,7 @@ public class SpringBootLauncher {
         Thread.setDefaultUncaughtExceptionHandler(new DefaultExceptionHandler());
         String profiles = System.getProperty("spring.profiles.active", "");
 
-        SpringApplication application = new SpringApplication(SpringBootInitializer.class, RepositoryConfiguration.class, DataSourceConfiguration.class, WebSecurityConfig.class, MvcConfiguration.class);
+        SpringApplication application = new SpringApplication(SpringBootInitializer.class, DataSourceConfiguration.class, WebSecurityConfig.class, MvcConfiguration.class);
         List<String> additionalProfiles = new ArrayList<>();
         additionalProfiles.add(Initializer.PROFILE_SPRING_BOOT);
         if("true".equals(System.getenv("ALFIO_LOG_STDOUT_ONLY"))) {
@@ -48,26 +46,9 @@ public class SpringBootLauncher {
         if("true".equals(System.getenv("ALFIO_DEMO_ENABLED"))) {
             additionalProfiles.add(Initializer.PROFILE_DEMO);
         }
-        if("true".equals(System.getenv("ALFIO_JDBC_SESSION_ENABLED"))) {
-            additionalProfiles.add(Initializer.PROFILE_JDBC_SESSION);
-        }
-        application.setAdditionalProfiles(additionalProfiles.toArray(new String[additionalProfiles.size()]));
+        application.setAdditionalProfiles(additionalProfiles.toArray(new String[0]));
         ConfigurableApplicationContext applicationContext = application.run(args);
         ConfigurableEnvironment environment = applicationContext.getEnvironment();
         log.info("profiles: requested {}, active {}", profiles, String.join(", ", (CharSequence[]) environment.getActiveProfiles()));
-        if ("true".equals(System.getProperty("startDBManager"))) {
-            launchHsqlGUI();
-        }
-    }
-
-
-    private static void launchHsqlGUI() {
-        Class<?> cls;
-        try {
-            cls = ClassUtils.getClass("org.hsqldb.util.DatabaseManagerSwing");
-            MethodUtils.invokeStaticMethod(cls, "main", new Object[]{new String[]{"--url", "jdbc:hsqldb:mem:alfio", "--noexit"}});
-        } catch (ReflectiveOperationException e) {
-            log.warn("error starting db manager", e);
-        }
     }
 }

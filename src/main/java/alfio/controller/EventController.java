@@ -24,6 +24,7 @@ import alfio.controller.form.ReservationForm;
 import alfio.controller.support.SessionUtil;
 import alfio.manager.EventManager;
 import alfio.manager.EventStatisticsManager;
+import alfio.manager.RecaptchaService;
 import alfio.manager.TicketReservationManager;
 import alfio.manager.i18n.I18nManager;
 import alfio.manager.system.ConfigurationManager;
@@ -33,7 +34,6 @@ import alfio.model.modification.support.LocationDescriptor;
 import alfio.model.result.ValidationResult;
 import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
-import alfio.model.transaction.PaymentProxy;
 import alfio.repository.*;
 import alfio.repository.user.OrganizationRepository;
 import alfio.util.ErrorsCode;
@@ -60,6 +60,9 @@ import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 import static alfio.controller.support.SessionUtil.addToFlash;
+import static alfio.model.PromoCodeDiscount.categoriesOrNull;
+import static alfio.model.system.Configuration.getSystemConfiguration;
+import static alfio.model.system.ConfigurationKeys.RECAPTCHA_API_KEY;
 import static alfio.util.OptionalWrapper.optionally;
 
 @Controller
@@ -82,6 +85,7 @@ public class EventController {
     private final AdditionalServiceRepository additionalServiceRepository;
     private final AdditionalServiceTextRepository additionalServiceTextRepository;
     private final TicketRepository ticketRepository;
+    private final RecaptchaService recaptchaService;
 
 
     @RequestMapping(value = "/", method = RequestMethod.HEAD)
@@ -128,7 +132,7 @@ public class EventController {
                                  Model model,
                                  HttpServletRequest request) {
         
-        SessionUtil.removeSpecialPriceData(request);
+        SessionUtil.cleanupSession(request);
 
         Optional<Event> optional = eventRepository.findOptionalByShortName(eventName);
         if(!optional.isPresent()) {
@@ -151,6 +155,8 @@ public class EventController {
             
         } else if (promotionCodeDiscount.isPresent() && !promotionCodeDiscount.get().isCurrentlyValid(event.getZoneId(), now)) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
+        } else if (promotionCodeDiscount.isPresent() && isDiscountCodeUsageExceeded(promotionCodeDiscount.get())){
+            return ValidationResult.failed(new ValidationResult.ErrorDescriptor("usage", ""));
         } else if(!specialCode.isPresent() && !promotionCodeDiscount.isPresent()) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
         }
@@ -164,6 +170,10 @@ public class EventController {
             return ValidationResult.success();
         }
         return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
+    }
+
+    private boolean isDiscountCodeUsageExceeded(PromoCodeDiscount discount) {
+        return discount.getMaxUsage() != null && discount.getMaxUsage() <= promoCodeRepository.countConfirmedPromoCode(discount.getId(), categoriesOrNull(discount), null, categoriesOrNull(discount) != null ? "X" : null);
     }
 
     @RequestMapping(value = "/event/{eventName}", method = {RequestMethod.GET, RequestMethod.HEAD})
@@ -184,9 +194,16 @@ public class EventController {
 
             List<SaleableTicketCategory> saleableTicketCategories = ticketCategories.stream()
                 .filter((c) -> !c.isAccessRestricted() || (specialCode.filter(sc -> sc.getTicketCategoryId() == c.getId()).isPresent()))
-                .map((m) -> new SaleableTicketCategory(m, categoriesDescription.getOrDefault(m.getId(), ""),
-                    now, event, ticketReservationManager.countAvailableTickets(event, m), configurationManager.getIntConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), m.getId(), ConfigurationKeys.MAX_AMOUNT_OF_TICKETS_BY_RESERVATION), 5),
-                    promoCodeDiscount.filter(promoCode -> shouldApplyDiscount(promoCode, m)).orElse(null)))
+                .map((m) -> {
+                    int maxTickets = configurationManager.getIntConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), m.getId(), ConfigurationKeys.MAX_AMOUNT_OF_TICKETS_BY_RESERVATION), 5);
+                    PromoCodeDiscount filteredPromoCode = promoCodeDiscount.filter(promoCode -> shouldApplyDiscount(promoCode, m)).orElse(null);
+                    if(filteredPromoCode != null && filteredPromoCode.getMaxUsage() != null) {
+                        maxTickets = filteredPromoCode.getMaxUsage() - promoCodeRepository.countConfirmedPromoCode(filteredPromoCode.getId(), categoriesOrNull(filteredPromoCode), null, categoriesOrNull(filteredPromoCode) != null ? "X" : null);
+                    }
+                    return new SaleableTicketCategory(m, categoriesDescription.getOrDefault(m.getId(), ""),
+                        now, event, ticketReservationManager.countAvailableTickets(event, m), maxTickets,
+                        filteredPromoCode);
+                })
                 .collect(Collectors.toList());
             //
 
@@ -200,8 +217,9 @@ public class EventController {
 
             LocationDescriptor ld = LocationDescriptor.fromGeoData(event.getLatLong(), TimeZone.getTimeZone(event.getTimeZone()), geoInfoConfiguration);
 
-            final boolean hasAccessPromotions = ticketCategoryRepository.countAccessRestrictedRepositoryByEventId(event.getId()) > 0 ||
-                promoCodeRepository.countByEventAndOrganizationId(event.getId(), event.getOrganizationId()) > 0;
+            final boolean hasAccessPromotions = configurationManager.getBooleanConfigValue(Configuration.from(orgId, eventId, ConfigurationKeys.DISPLAY_DISCOUNT_CODE_BOX), true) &&
+                (ticketCategoryRepository.countAccessRestrictedRepositoryByEventId(event.getId()) > 0 ||
+                promoCodeRepository.countByEventAndOrganizationId(event.getId(), event.getOrganizationId()) > 0);
 
             String eventDescription = eventDescriptionRepository.findDescriptionByEventIdTypeAndLocale(event.getId(), EventDescription.EventDescriptionType.DESCRIPTION, locale.getLanguage()).orElse("");
 
@@ -210,7 +228,6 @@ public class EventController {
             List<SaleableTicketCategory> validCategories = saleableTicketCategories.stream().filter(tc -> !tc.getExpired()).collect(Collectors.toList());
             List<SaleableAdditionalService> additionalServices = additionalServiceRepository.loadAllForEvent(event.getId()).stream().map((as) -> getSaleableAdditionalService(event, locale, as, promoCodeDiscount.orElse(null))).collect(Collectors.toList());
             Predicate<SaleableTicketCategory> waitingQueueTargetCategory = tc -> !tc.getExpired() && !tc.isBounded();
-            boolean validPaymentConfigured = isEventHasValidPaymentConfigurations(event, configurationManager);
 
             List<SaleableAdditionalService> notExpiredServices = additionalServices.stream().filter(SaleableAdditionalService::isNotExpired).collect(Collectors.toList());
 
@@ -239,11 +256,15 @@ public class EventController {
                 .addAttribute("showAdditionalServicesSupplements", !supplements.isEmpty())
                 .addAttribute("enabledAdditionalServicesDonations", donations)
                 .addAttribute("enabledAdditionalServicesSupplements", supplements)
-                .addAttribute("forwardButtonDisabled", (saleableTicketCategories.stream().noneMatch(SaleableTicketCategory::getSaleable)) || !validPaymentConfigured)
+                .addAttribute("forwardButtonDisabled", saleableTicketCategories.stream().noneMatch(SaleableTicketCategory::getSaleable))
                 .addAttribute("useFirstAndLastName", event.mustUseFirstAndLastName())
-                .addAttribute("validPaymentMethodAvailable", validPaymentConfigured)
                 .addAttribute("validityStart", event.getBegin())
                 .addAttribute("validityEnd", event.getEnd());
+
+            if(configurationManager.isRecaptchaForTicketSelectionEnabled(event)) {
+                model.addAttribute("captchaForTicketSelectionEnabled", true)
+                    .addAttribute("recaptchaApiKey", configurationManager.getStringConfigValue(getSystemConfiguration(RECAPTCHA_API_KEY), null));
+            }
 
             model.asMap().putIfAbsent("hasErrors", false);//
             return "/event/show-event";
@@ -361,6 +382,11 @@ public class EventController {
     }
 
     private String validateAndReserve(String eventName, ReservationForm reservation, BindingResult bindingResult, ServletWebRequest request, RedirectAttributes redirectAttributes, Locale locale, Event event) {
+
+        if(isCaptchaInvalid(request.getRequest(), event)) {
+            bindingResult.reject(ErrorsCode.STEP_2_CAPTCHA_VALIDATION_FAILED);
+        }
+
         final String redirectToEvent = "redirect:/event/" + eventName + "/";
         return reservation.validate(bindingResult, ticketReservationManager, additionalServiceRepository, eventManager, event)
             .map(selected -> {
@@ -385,7 +411,11 @@ public class EventController {
                 } catch (TicketReservationManager.InvalidSpecialPriceTokenException invalid) {
                     bindingResult.reject(ErrorsCode.STEP_1_CODE_NOT_FOUND);
                     addToFlash(bindingResult, redirectAttributes);
-                    SessionUtil.removeSpecialPriceData(request.getRequest());
+                    SessionUtil.cleanupSession(request.getRequest());
+                    return redirectToEvent;
+                } catch (TicketReservationManager.TooManyTicketsForDiscountCodeException tooMany) {
+                    bindingResult.reject(ErrorsCode.STEP_2_DISCOUNT_CODE_USAGE_EXCEEDED);
+                    addToFlash(bindingResult, redirectAttributes);
                     return redirectToEvent;
                 }
             }).orElseGet(() -> {
@@ -412,15 +442,9 @@ public class EventController {
         return promoCodeDiscount.getCategories().isEmpty() || promoCodeDiscount.getCategories().contains(ticketCategory.getId());
     }
 
-    private boolean isEventHasValidPaymentConfigurations(Event event, ConfigurationManager configurationManager) {
-        if (event.isFreeOfCharge()) {
-            return true;
-        } else if (event.getAllowedPaymentProxies().size() == 0) {
-            return false;
-        } else {
-            //Check whether event already started and it has only PaymentProxy.OFFLINE as payment method
-            return !(event.getAllowedPaymentProxies().size() == 1 && event.getAllowedPaymentProxies().contains(PaymentProxy.OFFLINE) && !TicketReservationManager.hasValidOfflinePaymentWaitingPeriod(event, configurationManager));
-        }
+    private boolean isCaptchaInvalid(HttpServletRequest request, Event event) {
+        return configurationManager.isRecaptchaForTicketSelectionEnabled(event)
+            && !recaptchaService.checkRecaptcha(request);
     }
 
 }

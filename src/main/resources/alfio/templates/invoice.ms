@@ -2,9 +2,16 @@
 <html>
 	<head>
 		<style>
+
+		    @font-face {
+		        font-family: 'DejaVu Sans';
+		        src: url('alfio-internal:/DejaVuSans.ttf');
+            }
+
 			body {
-				font-family:"Helvetica Neue", Helvetica, Arial, sans-serif;
-				font-size:11pt;
+				font-family: "DejaVu Sans";
+                font-size:10pt;
+                line-height:12pt;
 			}
 
             h1,h2,p {margin:0;}
@@ -73,10 +80,6 @@
                 min-height: 25px;
             }
 
-            .strong {
-                font-weight: bold;
-            }
-
             .mb {
                 margin-bottom: 3em;
             }
@@ -103,7 +106,7 @@
             <tr>
                 {{#eventImage}}<td style="width:{{imageWidth}}px; height:{{imageHeight}}px"><img style="margin:auto; width:{{imageWidth}}px; height:{{imageHeight}}px" src="{{eventImage}}"/></td>{{/eventImage}}
                 {{^eventImage}}<td style="text-align: center; vertical-align: middle;"><h1>{{event.displayName}}</h1></td>{{/eventImage}}
-                <td style="text-align: center; vertical-align: middle;"><h1>{{#i18n}}invoice.vat-invoice{{/i18n}}</h1></td>
+                <td style="text-align: center; vertical-align: middle;"><h1>{{#i18n}}invoice.vat-invoice [{{vatTranslation}}]{{/i18n}}</h1></td>
             </tr>
         </table>
 
@@ -113,9 +116,10 @@
             <tr>
                 <td colspan="2" style="text-align: left" class="small">
                     <p>{{invoiceAddress}}</p>
-                    <p>{{#i18n}}invoice.vat{{/i18n}} {{vatNr}}</p>
+                    <p>{{#i18n}}invoice.vat [{{vatTranslation}}]{{/i18n}} {{vatNr}}</p>
                     <p class="strong">{{#i18n}}invoice.number{{/i18n}} {{ticketReservation.invoiceNumber}}</p>
                     <p>{{#i18n}}invoice.date{{/i18n}} {{#format-date}}{{confirmationDate}} dd/MM/yyyy locale:{{#i18n}}locale{{/i18n}}{{/format-date}}</p>
+                    {{#hasCustomerReference}}<p><strong>{{#i18n}}common.customer-reference{{/i18n}}</strong>: {{ticketReservation.customerReference}}</p>{{/hasCustomerReference}}
                     {{#isOfflinePayment}}<p class="strong">{{#i18n}}reservation-page-waiting.title [{{#format-date}}{{expirationDate}} {{#i18n}}datetime.pattern{{/i18n}} locale:{{#i18n}}locale{{/i18n}}{{/format-date}}]{{/i18n}}</p>{{/isOfflinePayment}}
                 </td>
             </tr>
@@ -129,7 +133,10 @@
                     <p>{{.}}</p>
                     {{/ticketReservation.lineSplittedBillingAddress}}
                     {{/ticketReservation.hasBillingAddress}}
-                    {{^orderSummary.displayVat}}{{#i18n}}invoice.vat{{/i18n}} {{ticketReservation.vatNr}}{{/orderSummary.displayVat}}
+                    {{#ticketReservation.hasVatNumber}}
+                        <p>{{#i18n}}invoice.vat [{{vatTranslation}}]{{/i18n}} {{ticketReservation.vatNr}}</p>
+                        <p>{{#country-name}}{{ticketReservation.vatCountryCode}} locale:{{#i18n}}locale{{/i18n}}{{/country-name}}</p>
+                    {{/ticketReservation.hasVatNumber}}
                 </td>
             </tr>
         </table>
@@ -163,10 +170,10 @@
             <tfoot>
                 {{^orderSummary.free}}
                     {{#orderSummary.displayVat}}
-                        <tr><th colspan="3" class="no-padding">{{#i18n}}reservation-page.vat [{{ticketReservation.usedVatPercent}}]{{/i18n}}</th><th class="text-right">{{orderSummary.totalVAT}}</th></tr>
+                        <tr><th colspan="3" class="no-padding">{{#i18n}}reservation-page.vat [{{ticketReservation.usedVatPercent}}] [{{vatTranslation}}]{{/i18n}}</th><th class="text-right">{{orderSummary.totalVAT}}</th></tr>
                     {{/orderSummary.displayVat}}
                     {{^orderSummary.displayVat}}
-                        <tr><th colspan="4" class="no-padding">{{#i18n}}invoice.vat-voided{{/i18n}}</th></tr>
+                        <tr><th colspan="4" class="no-padding">{{#i18n}}invoice.vat-voided [{{vatTranslation}}]{{/i18n}}</th></tr>
                     {{/orderSummary.displayVat}}
                 {{/orderSummary.free}}
                 <tr><th colspan="3" class="strong" class="no-padding">{{#i18n}}reservation-page.total{{/i18n}}</th><th class="text-right strong">{{event.currency}} {{orderSummary.totalPrice}}</th></tr>
@@ -177,6 +184,9 @@
             <p class="strong">{{#i18n}}invoice.order-information{{/i18n}}</p>
             <p>{{ticketReservation.id}}</p>
             <p>{{#i18n}}invoice.buyer{{/i18n}} {{ticketReservation.fullName}} &lt;{{ticketReservation.email}}&gt;</p>
+            {{#hasRefund}}
+            <p class="strong">{{#i18n}}invoice.refund [{{event.currency}} {{orderSummary.refundedAmount}}]{{/i18n}}</p>
+            {{/hasRefund}}
         </div>
 
         {{#isOfflinePayment}}

@@ -5,6 +5,7 @@
 function getScriptMetadata() {
     return {
         id: 'myExtensionIdentifier', // optional: id and version will be used later as a mechanism for checking if the script has a newer version
+        displayName: 'My Extension', //mandatory: the name displayed in the configuration page
         version: 0, // optional
         async: false,
         events: [
@@ -12,6 +13,7 @@ function getScriptMetadata() {
             //'RESERVATION_CONFIRMED', //fired on reservation confirmation. No results expected.
             //'RESERVATION_EXPIRED', //fired when reservation(s) expired
             //'RESERVATION_CANCELLED', //fired when reservation(s) are cancelled
+            //'TICKET_CANCELLED', //fired when ticket(s) (but not the entire reservation) are cancelled
             //'TICKET_ASSIGNED', //fired on ticket assignment. No results expected.
             //'WAITING_QUEUE_SUBSCRIPTION', //fired on waiting queue subscription. No results expected.
             //'EVENT_CREATED', //fired when an event has been created. Return boolean for synchronous variant, no results expected for the asynchronous one.
@@ -31,9 +33,10 @@ function getScriptMetadata() {
  */
 function executeScript(scriptEvent) {
     log.warn('hello from script with event: ' + scriptEvent);
+    log.warn('extension parameters are: ' + extensionParameters);
     //this sample calls the https://csrng.net/ website and generates a random invoice number
-    var randomNumber = restTemplate.getForObject('https://csrng.net/csrng/csrng.php?min=0&max=100', Java.type('java.util.ArrayList').class)[0].random;
-    log.warn('the invoice number will be ' + randomNumber)
+    var randomNumber = simpleHttpClient.get('https://csrng.net/csrng/csrng.php?min=0&max=100').getJsonBody()[0].random;
+    log.warn('the invoice number will be: ' + randomNumber);
     return {
         invoiceNumber: randomNumber
     };

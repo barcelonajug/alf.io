@@ -18,10 +18,13 @@ package alfio.manager;
 
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.Event;
+import alfio.model.TicketCategory;
+import alfio.model.TicketInfo;
 import alfio.model.WaitingQueueSubscription;
 import alfio.model.modification.TicketReservationWithOptionalCodeModification;
 import alfio.model.system.Configuration;
 import alfio.model.user.Organization;
+import alfio.repository.TicketRepository;
 import alfio.repository.WaitingQueueRepository;
 import alfio.util.TemplateManager;
 import alfio.util.TemplateResource;
@@ -58,15 +61,17 @@ public class WaitingQueueSubscriptionProcessor {
     private final WaitingQueueRepository waitingQueueRepository;
     private final MessageSource messageSource;
     private final TemplateManager templateManager;
+    private final TicketRepository ticketRepository;
     private final PlatformTransactionManager transactionManager;
 
-    void handleWaitingTickets() {
+    public void handleWaitingTickets() {
         Map<Boolean, List<Event>> activeEvents = eventManager.getActiveEvents().stream()
             .collect(Collectors.partitioningBy(this::isWaitingListFormEnabled));
         activeEvents.get(true).forEach(event -> {
             TransactionStatus transaction = transactionManager.getTransaction(new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW));
             try {
                 ticketReservationManager.revertTicketsToFreeIfAccessRestricted(event.getId());
+                revertTicketToFreeIfCategoryIsExpired(event);
                 distributeAvailableSeats(event);
                 transactionManager.commit(transaction);
             } catch(Exception ex) {
@@ -79,12 +84,28 @@ public class WaitingQueueSubscriptionProcessor {
         activeEvents.get(false).forEach(eventManager::resetReleasedTickets);
     }
 
+    public void revertTicketToFreeIfCategoryIsExpired(Event event) {
+        int eventId = event.getId();
+        List<TicketInfo> releasedButExpired = ticketRepository.findReleasedBelongingToExpiredCategories(eventId, ZonedDateTime.now(event.getZoneId()));
+        Map<TicketCategory, List<TicketInfo>> releasedByCategory = releasedButExpired.stream().collect(Collectors.groupingBy(TicketInfo::getTicketCategory));
+        for (Map.Entry<TicketCategory, List<TicketInfo>> entry : releasedByCategory.entrySet()) {
+            TicketCategory category = entry.getKey();
+            List<Integer> ids = entry.getValue().stream().map(ft -> ft.getTicket().getId()).collect(Collectors.toList());
+            if(category.isBounded()) {
+                ticketRepository.revertToFree(eventId, category.getId(), ids);
+            } else {
+                ticketRepository.unbindTicketsFromCategory(eventId, category.getId(), ids);
+            }
+        }
+
+    }
+
     private boolean isWaitingListFormEnabled(Event event) {
         return configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ENABLE_WAITING_QUEUE), false)
                 || configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ENABLE_PRE_REGISTRATION), false);
     }
 
-    void distributeAvailableSeats(Event event) {
+    public void distributeAvailableSeats(Event event) {
         waitingQueueManager.distributeSeats(event).forEach(triple -> {
             WaitingQueueSubscription subscription = triple.getLeft();
             Locale locale = subscription.getLocale();

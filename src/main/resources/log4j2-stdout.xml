@@ -10,6 +10,9 @@
         <Logger name="alfio" level="debug" additivity="false">
             <appender-ref ref="Console"/>
         </Logger>
+        <Logger name="alfio.config" level="info" additivity="false">
+            <appender-ref ref="Console"/>
+        </Logger>
         <Logger name="org.springframework" level="warn" additivity="false">
             <appender-ref ref="Console" />
         </Logger>

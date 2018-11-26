@@ -16,38 +16,102 @@
  */
 package alfio.manager;
 
-import com.insightfullogic.lambdabehave.JunitSuiteRunner;
-import com.stripe.exception.*;
-import org.junit.runner.RunWith;
+import alfio.manager.support.PaymentResult;
+import alfio.manager.system.ConfigurationManager;
+import alfio.model.CustomerName;
+import alfio.model.Event;
+import alfio.model.transaction.token.StripeCreditCardToken;
+import alfio.repository.AuditingRepository;
+import alfio.repository.TicketRepository;
+import alfio.repository.TransactionRepository;
+import alfio.repository.user.UserRepository;
+import com.stripe.exception.AuthenticationException;
+import com.stripe.exception.StripeException;
+import com.stripe.model.Charge;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.core.env.Environment;
 
-import static com.insightfullogic.lambdabehave.Suite.describe;
+import java.time.ZonedDateTime;
+import java.util.Map;
+import java.util.Optional;
 
-@RunWith(JunitSuiteRunner.class)
-public class StripeManagerTest {{
+import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
-    StripeManager stripeManager = new StripeManager(null, null, null, null);
+public class StripeManagerTest {
 
-    describe("Exception handler", it -> {
+    private TransactionRepository transactionRepository;
+    private ConfigurationManager configurationManager;
+    private AuditingRepository auditingRepository;
+    private UserRepository userRepository;
+    private TicketRepository ticketRepository;
+    private Event event;
+    private CustomerName customerName;
 
-        it.should("return stripe's code in case of CardException", expect ->
-                expect.that(stripeManager.handleException(new CardException("abcd", "houston_we_ve_a_problem", "param", null, null, null, null, null)))
-                      .is("error.STEP2_STRIPE_houston_we_ve_a_problem"));
+    private final String paymentId = "customer#1";
+    private final String error = "errorCode";
 
-        it.should("return a code containing the field in error in case of InvalidRequestException", expect ->
-                expect.that(stripeManager.handleException(new InvalidRequestException("abcd", "param", null, null, null)))
-                        .is("error.STEP2_STRIPE_invalid_param"));
+    @BeforeEach
+    public void setUp() {
+        transactionRepository = mock(TransactionRepository.class);
+        configurationManager = mock(ConfigurationManager.class);
+        auditingRepository = mock(AuditingRepository.class);
+        userRepository = mock(UserRepository.class);
+        ticketRepository = mock(TicketRepository.class);
+        event = mock(Event.class);
+        customerName = mock(CustomerName.class);
+        when(customerName.getFullName()).thenReturn("ciccio");
+    }
 
-        it.should("return the 'abort' error code in case of AuthenticationException, " +
-                "APIConnectionException and RateLimitException", expect -> {
-            expect.that(stripeManager.handleException(new AuthenticationException("abcd", null, 401)))
-                    .is("error.STEP2_STRIPE_abort");
-            expect.that(stripeManager.handleException(new APIConnectionException("abcd")))
-                    .is("error.STEP2_STRIPE_abort");
-        });
+    @Test
+    public void successFlow() throws StripeException {
+        StripeCreditCardManager stripeCreditCardManager = new StripeCreditCardManager( configurationManager, ticketRepository, transactionRepository, null, mock(Environment.class ) ) {
+            @Override
+            protected Optional<Charge> charge( Event event, Map<String, Object> chargeParams ) throws StripeException {
+                return Optional.of( new Charge() {{
+                    setId(paymentId);
+                    setDescription("description");
+                }});
+            }
+        };
+        PaymentSpecification spec = new PaymentSpecification( "", new StripeCreditCardToken(""), 100, event, "", customerName );
+        PaymentResult result = stripeCreditCardManager.doPayment(spec);
+        assertEquals(result, PaymentResult.successful(paymentId));
+    }
 
-        it.should("return the 'unexpected' error in the other cases", expect ->
-                expect.that(stripeManager.handleException(new StripeException("", null, 42) {}))
-                        .is("error.STEP2_STRIPE_unexpected"));
+    @Test
+    void stripeError() {
+        StripeCreditCardManager stripeCreditCardManager = new StripeCreditCardManager( configurationManager, ticketRepository, transactionRepository, null, mock(Environment.class ) ) {
+            @Override
+            protected Optional<Charge> charge( Event event, Map<String, Object> chargeParams ) throws StripeException {
+                throw new AuthenticationException("401", "42", "401", 401);
+            }
+        };
+        PaymentSpecification spec = new PaymentSpecification( "", new StripeCreditCardToken(""), 100, event, "", customerName );
+        PaymentResult result = stripeCreditCardManager.doPayment(spec);
+        assertEquals(result, PaymentResult.failed("error.STEP2_STRIPE_abort"));
+    }
 
-    });
-}}
+    @Test
+    public void internalError() throws StripeException {
+        StripeCreditCardManager stripeCreditCardManager = new StripeCreditCardManager( configurationManager, ticketRepository, transactionRepository, null, mock(Environment.class ) ) {
+            @Override
+            protected Optional<Charge> charge( Event event, Map<String, Object> chargeParams ) throws StripeException {
+                return Optional.of( new Charge() {{
+                    setId(paymentId);
+                    setDescription("description");
+                }});
+            }
+        };
+        when(event.getCurrency()).thenReturn("CHF");
+        when(transactionRepository.insert(anyString(), isNull(), anyString(), any(ZonedDateTime.class), anyInt(), eq("CHF"), anyString(), anyString(), anyLong(), anyLong()))
+            .thenThrow(new NullPointerException());
+
+        PaymentSpecification spec = new PaymentSpecification( "", new StripeCreditCardToken(""), 100, event, "", customerName );
+        Assertions.assertThrows(IllegalStateException.class, () -> stripeCreditCardManager.doPayment(spec));
+    }
+}

@@ -93,9 +93,7 @@ public class ConfigurationManager {
      * @return
      */
     private Configuration selectPath(List<Configuration> conf) {
-        return conf.size() == 1 ? conf.get(0) : conf.stream()
-            .sorted(Comparator.comparing(Configuration::getConfigurationPathLevel).reversed())
-            .findFirst().orElse(null);
+        return conf.size() == 1 ? conf.get(0) : conf.stream().max(Comparator.comparing(Configuration::getConfigurationPathLevel)).orElse(null);
     }
 
     //meh
@@ -448,5 +446,10 @@ public class ConfigurationManager {
     public boolean isRecaptchaForOfflinePaymentEnabled(Event event) {
         return getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ENABLE_CAPTCHA_FOR_OFFLINE_PAYMENTS), false)
             && getStringConfigValue(Configuration.getSystemConfiguration(ENABLE_CAPTCHA_FOR_OFFLINE_PAYMENTS), null) != null;
+    }
+
+    public boolean isRecaptchaForTicketSelectionEnabled(Event event) {
+        return getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ENABLE_CAPTCHA_FOR_TICKET_SELECTION), false)
+            && getStringConfigValue(Configuration.getSystemConfiguration(RECAPTCHA_API_KEY), null) != null;
     }
 }

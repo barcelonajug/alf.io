@@ -24,6 +24,7 @@ import alfio.repository.user.AuthorityRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.repository.user.UserRepository;
 import alfio.repository.user.join.UserOrganizationRepository;
+import alfio.util.OptionalWrapper;
 import alfio.util.PasswordGenerator;
 import ch.digitalfondue.npjt.AffectedRowCountAndKey;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +36,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.Assert;
 
+import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -73,7 +75,9 @@ public class UserManager {
                         .stream()
                         .map(u -> {
                             List<UserOrganization> userOrganizations = usersAndOrganizations.get(u.getId());
-                            return new UserWithOrganizations(u, organizations.stream().filter(o -> userOrganizations.stream().anyMatch(uo -> uo.getOrganizationId() == o.getId())).collect(toList()));
+                            List<Organization> filteredOrganizations = organizations.stream().filter(o -> userOrganizations.stream().anyMatch(uo -> uo.getOrganizationId() == o.getId())).collect(toList());
+                            List<Role> roles = authorityRepository.findRoles(u.getUsername()).stream().map(Role::fromRoleName).collect(toList());
+                            return new UserWithOrganizations(u, filteredOrganizations, roles);
                         }).collect(toList()));
             }).orElseGet(Collections::emptyList);
     }
@@ -85,6 +89,10 @@ public class UserManager {
                 .map(uo -> userRepository.findById(uo.getUserId()))
                 .filter(User::isEnabled)
                 .collect(toList());
+    }
+
+    public List<User> findAllApiKeysFor(int organizationId) {
+        return userRepository.findAllApiKeysForOrganization(organizationId);
     }
 
     public User findUserByUsername(String username) {
@@ -101,7 +109,7 @@ public class UserManager {
 
     public Collection<Role> getAvailableRoles(String username) {
         User user = findUserByUsername(username);
-        return isAdmin(user) || isOwner(user) ? EnumSet.of(Role.OWNER, Role.OPERATOR, Role.SUPERVISOR, Role.SPONSOR) : Collections.emptySet();
+        return isAdmin(user) || isOwner(user) ? EnumSet.of(Role.OWNER, Role.OPERATOR, Role.SUPERVISOR, Role.SPONSOR, Role.API_CONSUMER) : Collections.emptySet();
     }
 
     /**
@@ -137,6 +145,12 @@ public class UserManager {
         return isAdmin(user) || (isOwner(user) && userOrganizationRepository.findByUserId(user.getId()).stream().anyMatch(uo -> uo.getOrganizationId() == organizationId));
     }
 
+    public boolean isOwnerOfOrganization(String username, int organizationId) {
+        return userRepository.findByUsername(username)
+            .filter(user -> isOwnerOfOrganization(user, organizationId))
+            .isPresent();
+    }
+
     private boolean checkRole(User user, Set<Role> expectedRoles) {
         Set<String> roleNames = expectedRoles.stream().map(Role::getRoleName).collect(Collectors.toSet());
         return authorityRepository.checkRole(user.getUsername(), roleNames);
@@ -156,7 +170,7 @@ public class UserManager {
     }
 
     public ValidationResult validateOrganization(Integer id, String name, String email, String description) {
-        if(organizationRepository.findByName(name).isPresent()) {
+        if(id == null && organizationRepository.findByName(name).isPresent()) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("name", "There is already another organization with the same name."));
         }
         Validate.notBlank(name, "name can't be empty");
@@ -166,13 +180,13 @@ public class UserManager {
     }
 
     @Transactional
-    public void editUser(int id, int organizationId, String username, String firstName, String lastName, String emailAddress, Role role, String currentUsername) {
+    public void editUser(int id, int organizationId, String username, String firstName, String lastName, String emailAddress, String description, Role role, String currentUsername) {
         boolean admin = ADMIN_USERNAME.equals(username) && Role.ADMIN == role;
         if(!admin) {
             int userOrganizationResult = userOrganizationRepository.updateUserOrganization(id, organizationId);
             Assert.isTrue(userOrganizationResult == 1, "unexpected error during organization update");
         }
-        int userResult = userRepository.update(id, username, firstName, lastName, emailAddress);
+        int userResult = userRepository.update(id, username, firstName, lastName, emailAddress, description);
         Assert.isTrue(userResult == 1, "unexpected error during user update");
         if(!admin) {
             Assert.isTrue(getAvailableRoles(currentUsername).contains(role), "cannot assign role "+role);
@@ -183,17 +197,36 @@ public class UserManager {
 
     @Transactional
     public UserWithPassword insertUser(int organizationId, String username, String firstName, String lastName, String emailAddress, Role role, User.Type userType) {
-        String userPassword = PasswordGenerator.generateRandomPassword();
-        return insertUser(organizationId, username, firstName, lastName, emailAddress, role, userType, userPassword);
+        return insertUser(organizationId, username, firstName, lastName, emailAddress, role, userType, null, null);
     }
 
     @Transactional
-    public UserWithPassword insertUser(int organizationId, String username, String firstName, String lastName, String emailAddress, Role role, User.Type userType, String userPassword) {
+    public UserWithPassword insertUser(int organizationId, String username, String firstName, String lastName, String emailAddress, Role role, User.Type userType, ZonedDateTime validTo, String description) {
+        if (userType == User.Type.API_KEY) {
+            username = UUID.randomUUID().toString();
+            firstName = "apikey";
+            lastName = "";
+            emailAddress = "";
+        }
+
+        String userPassword = PasswordGenerator.generateRandomPassword();
+        return insertUser(organizationId, username, firstName, lastName, emailAddress, role, userType, userPassword, validTo, description);
+    }
+
+    @Transactional
+    public void bulkInsertApiKeys(int organizationId, Role role, List<String> descriptions) {
+        for (String description : descriptions) {
+            insertUser(organizationId, null, null, null, null, role, User.Type.API_KEY, null, description);
+        }
+    }
+
+    @Transactional
+    public UserWithPassword insertUser(int organizationId, String username, String firstName, String lastName, String emailAddress, Role role, User.Type userType, String userPassword, ZonedDateTime validTo, String description) {
         Organization organization = organizationRepository.getById(organizationId);
-        AffectedRowCountAndKey<Integer> result = userRepository.create(username, passwordEncoder.encode(userPassword), firstName, lastName, emailAddress, true, userType);
+        AffectedRowCountAndKey<Integer> result = userRepository.create(username, passwordEncoder.encode(userPassword), firstName, lastName, emailAddress, true, userType, validTo, description);
         userOrganizationRepository.create(result.getKey(), organization.getId());
         authorityRepository.create(username, role.getRoleName());
-        return new UserWithPassword(userRepository.findById(result.getKey()), userPassword, UUID.randomUUID().toString());
+        return new UserWithPassword(userRepository.findById(result.getKey()), userType != User.Type.API_KEY ? userPassword : "", UUID.randomUUID().toString());
     }
 
     @Transactional
@@ -231,7 +264,11 @@ public class UserManager {
     }
 
     public ValidationResult validateUser(Integer id, String username, int organizationId, String role, String firstName, String lastName, String emailAddress) {
-        if(userRepository.findByUsername(username).isPresent()) {
+
+        Optional<User> existing = Optional.ofNullable(id)
+            .flatMap(uid -> OptionalWrapper.optionally(() -> userRepository.findById(uid)));
+
+        if(!existing.filter(e -> e.getUsername().equals(username)).isPresent() && usernameExists(username)) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("username", "There is already another user with the same username."));
         }
         return ValidationResult.of(Stream.of(Pair.of(firstName, "firstName"), Pair.of(lastName, "lastName"), Pair.of(emailAddress, "emailAddress"))

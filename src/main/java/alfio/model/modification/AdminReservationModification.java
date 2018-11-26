@@ -32,6 +32,7 @@ import java.util.Optional;
 import static java.util.Collections.singletonList;
 import static java.util.Collections.singletonMap;
 import static java.util.stream.Collectors.toList;
+import static org.apache.commons.lang3.StringUtils.trimToEmpty;
 
 @Getter
 public class AdminReservationModification implements Serializable {
@@ -48,7 +49,7 @@ public class AdminReservationModification implements Serializable {
                                         @JsonProperty("customerData") CustomerData customerData,
                                         @JsonProperty("ticketsInfo") List<TicketsInfo> ticketsInfo,
                                         @JsonProperty("language") String language,
-                                        @JsonProperty("updateContactData") boolean updateContactData,
+                                        @JsonProperty("updateContactData") Boolean updateContactData,
                                         @JsonProperty("notification") Notification notification) {
         this.expiration = expiration;
         this.customerData = customerData;
@@ -65,18 +66,27 @@ public class AdminReservationModification implements Serializable {
         private final String emailAddress;
         private final String billingAddress;
         private final String userLanguage;
+        private final String customerReference;
+        private final String vatNr;
+        private final String vatCountryCode;
 
         @JsonCreator
         public CustomerData(@JsonProperty("firstName") String firstName,
                             @JsonProperty("lastName") String lastName,
                             @JsonProperty("emailAddress") String emailAddress,
                             @JsonProperty("billingAddress") String billingAddress,
-                            @JsonProperty("userLanguage") String userLanguage) {
-            this.firstName = firstName;
-            this.lastName = lastName;
-            this.emailAddress = emailAddress;
+                            @JsonProperty("userLanguage") String userLanguage,
+                            @JsonProperty("customerReference") String customerReference,
+                            @JsonProperty("vatNr") String vatNr,
+                            @JsonProperty("vatCountryCode") String vatCountryCode) {
+            this.firstName = trimToEmpty(firstName);
+            this.lastName = trimToEmpty(lastName);
+            this.emailAddress = trimToEmpty(emailAddress);
             this.billingAddress = billingAddress;
             this.userLanguage = userLanguage;
+            this.customerReference = customerReference;
+            this.vatNr = vatNr;
+            this.vatCountryCode = vatCountryCode;
         }
 
         public String getFullName() {
@@ -144,9 +154,9 @@ public class AdminReservationModification implements Serializable {
                         @JsonProperty("reference") String reference,
                         @JsonProperty("additionalInfo") Map<String, List<String>> additionalInfo) {
             this.ticketId = ticketId;
-            this.firstName = firstName;
-            this.lastName = lastName;
-            this.emailAddress = emailAddress;
+            this.firstName = trimToEmpty(firstName);
+            this.lastName = trimToEmpty(lastName);
+            this.emailAddress = trimToEmpty(emailAddress);
             this.language = language;
             this.reassignmentForbidden = Optional.ofNullable(reassignmentForbidden).orElse(false);
             this.reference = reference;
@@ -207,7 +217,10 @@ public class AdminReservationModification implements Serializable {
                 placeholderIfNotEmpty(in.lastName),
                 placeholderIfNotEmpty(in.emailAddress),
                 placeholderIfNotEmpty(in.billingAddress),
-                placeholderIfNotEmpty(in.userLanguage));
+                placeholderIfNotEmpty(in.userLanguage),
+                placeholderIfNotEmpty(in.customerReference),
+                placeholderIfNotEmpty(in.vatNr),
+                placeholderIfNotEmpty(in.vatCountryCode));
         }
         else return null;
     }

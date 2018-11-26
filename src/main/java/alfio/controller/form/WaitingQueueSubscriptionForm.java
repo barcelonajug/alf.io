@@ -18,19 +18,20 @@ package alfio.controller.form;
 
 import alfio.model.CustomerName;
 import alfio.model.Event;
-import com.stripe.model.Customer;
 import lombok.Data;
 
+import java.io.Serializable;
 import java.util.Locale;
 
 @Data
-public class WaitingQueueSubscriptionForm {
+public class WaitingQueueSubscriptionForm implements Serializable {
     private String fullName;
     private String firstName;
     private String lastName;
     private String email;
     private Locale userLanguage;
     private boolean termAndConditionsAccepted;
+    private boolean privacyPolicyAccepted;
     private Integer selectedCategory;
 
     public CustomerName toCustomerName(Event event) {

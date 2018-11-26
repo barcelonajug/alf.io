@@ -5,6 +5,11 @@ alf.io
 
 [![Build Status](http://img.shields.io/travis/alfio-event/alf.io/master.svg)](https://travis-ci.org/alfio-event/alf.io) [![Coverage Status](https://img.shields.io/coveralls/alfio-event/alf.io.svg)](https://coveralls.io/r/alfio-event/alf.io)
 
+## Warning
+
+As the work for Alf.io [v2](https://github.com/alfio-event/alf.io/milestones) has started, this branch may contain **unstable** and **untested** code. 
+If you want to build and deploy alf.io by yourself, we strongly suggest you to use the [1.x-maintenance](https://github.com/alfio-event/alf.io/tree/1.x-maintenance) branch.  
+
 ## Prerequisites
 
 You should have installed Java version 8 (either [Oracle's](http://www.oracle.com/technetwork/java/javase/downloads/index.html) or [OpenJDK](http://openjdk.java.net/install/)) in order to build and run alf.io. Please note that for the build process the JDK is required.
@@ -20,18 +25,48 @@ the project. Simply execute the wrapper along with the appropriate task, for exa
 ./gradlew clean
 ```
 
-#### Running with multiple profiles
+#### Running with multiple profiles
 
 You must specify a project property at the command line, such as
 ```
 ./gradlew -Pprofile=dev :bootRun
 ```
+The local "bootRun" task has the following prerequisites:
+
+- a PostgreSQL instance up and runnning on localhost:5432
+- a _postgres_ user having password: _password_
+- a database named _alfio_
+
+once started, alf.io will create all the required tables on the database.
+
+Note: if you want to test without installing a pgsql instance, we have configured the following tasks:
+
+- startEmbeddedPgSQL
+- stopEmbeddedPgSQL
+
+So, in a terminal first launch pgsql:
+
+```
+./gradlew startEmbeddedPgSQL
+```
+
+In another one launch alf.io
+
+```
+./gradlew -Pprofile=dev :bootRun
+```
+
+When you are done, kill the pgsql instance with:
+
+```
+./gradlew stopEmbeddedPgSQL
+```
+
 
 The following profiles are supported
 
  * `dev`
  * `dev-pgsql`
- * `dev-mysql`
  * `docker-test`
 
 You can get a list of all supported Gradle tasks by running
@@ -51,18 +86,6 @@ Please be aware that since this file could contain sensitive information (such a
 Add a new line with: `-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005` in custom.jvmargs
 
 
-#### Using hsqldb gui
-
-In the custom.jvmargs add the following 2 lines:
-
-```
--Djava.awt.headless=false
--DstartDBManager=true
-```
-
-Then, when executing `./gradlew -Pprofile=dev :bootRun`, the ui will automatically launch.
-
-
 ## Developing alf.io
 Importing the Gradle project into Intellij and Eclipse both work.
 
@@ -72,14 +95,29 @@ Importing the Gradle project into Intellij and Eclipse both work.
 
 `./gradlew dependencyUpdates`
 
-## Docker images
-Alf.io is also offered as a 3 tier application using 3 docker images:
+## Docker
 
- * `postgres` --> docker official image for PostgreSQL database
- * `exteso/alfio-web`--> application runtime. Docker image is generated from this project (see below).
- * `tutum/haproxy` --> front layer proxy, force redirect to https and support load-balancing if multiple alfio-web instances are running
+alf.io can be run for development with Docker Compose:
 
-### Generate a new version of the exteso/alfio-web docker image
+    docker-compose up
+
+If you plan on using Docker Compose to run alf.io in production, then you need
+to make a couple of changes:
+
+* Add a mapping for port `8443`
+* Handle SSL termination (e.g. with something like `tutum/haproxy`)
+* Remove the `SPRING_PROFILES_ACTIVE: dev` environment variable
+
+### Test alf.io application
+ * Check alfio logs: `docker logs alfio`
+ * Copy admin password in a secure place
+ * Get IP of your docker container: (only on Mac/Windows, on linux the proxy will bind directly on your public IP)
+    * `boot2docker ip` on Mac/Windows
+ * Open browser at: `https://DOCKER_IP/admin`
+ * Insert user admin and the password you just copied
+
+### Generate a new version of the alfio/alf.io docker image
+
  * Build application and Dockerfile:
  ```
  ./gradlew distribution
@@ -92,40 +130,8 @@ Alf.io is also offered as a 3 tier application using 3 docker images:
 
  * Create docker image:
  ```
- docker build -t exteso/alfio-web .
+ docker build -t alfio/alf.io .
  ```
-
-### Publish a new version of the exteso/alfio-web on docker hub
-TODO
-
-### Launch alf.io container instances
- * Define local directory for database data (on docker host, for data to survive postgres image restarts):  `/path/to/local/data = /data/postgres/alfio`
-
- * Define a local directory for logs: `/path/to/logs = /home/alfio/logs`
-
- * Launch the Postgres instance
- ```
- docker run --name alfio-db -e POSTGRES_DB=postgres -e POSTGRES_USERNAME=postgres -e POSTGRES_PASSWORD=alfiopassword --restart=always -d -v /path/to/local/data:/var/lib/postgresql/data postgres
- ```
-    * Note: on Mac volumes don't work (see https://jhipster.github.io/installation.html for a possible workaround), launch the above command without the `-v` parameter (data are lost at every restart)
-
- * Launch the alf.io server
- ```
- docker run --name alfio-web --link alfio-db:db -v /path/to/logs:/alfio/logs -d exteso/alfio-web
- ```
-
- * Launch the proxy
- ```
- docker run --name alfio-proxy --link alfio-web:web1 -e SSL_CERT="$(awk 1 ORS='\\n' src/main/dist/servercert.pem)" -e FORCE_SSL=yes -e PORT=8080 -p 443:443 -p 80:80 -d tutum/haproxy
- ```
-
-### Test alf.io application
- * See alfio-web logs: `docker logs alfio-web` or `less /path/to/logs/alfio.log`
- * Copy admin password in a secure place
- * Get IP of your docker container: (only on Mac/Windows, on linux the proxy will bind directly on your public IP)
-    * `boot2docker ip` on Mac/Windows
- * Open browser at: `https://DOCKER_IP/admin`
- * Insert user admin and the password you just copied
 
 ### About the included AppleWWDRCA.cer
 
@@ -135,9 +141,6 @@ It will expire the 02/07/23 (as https://www.apple.com/certificateauthority/).
 ## Available spring profiles:
 
  - dev: enable dev mode
- - debug-csp: add report-uri and log csp violations
- - http: enable if behind proxy or the call chain is not full https
  - spring-boot: added when launched by spring-boot
  - demo: enable demo mode, the accounts for the admin will be created on the fly
  - disable-jobs: disable jobs
- - jdbc-session: enable saving the http session in the database

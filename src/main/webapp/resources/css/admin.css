@@ -228,6 +228,10 @@ td.cell-wrap {
         padding-left: 85px;
     }
 
+    .setting select { /* Enable Padding on Select on OSX */
+        -webkit-appearance: none;
+    }
+
     .settings-label {
         position: absolute;
         left: 20px;
@@ -348,8 +352,8 @@ a.emulate-nav-pills-link {
     stroke:white;
 }
 .slice-pending {
-    fill: #0408de;
-    background-color: #0408DE;
+    fill: #7670b7;
+    background-color: #7670b7;
     stroke:white;
 }
 .slice-danger {
@@ -379,8 +383,14 @@ a.emulate-nav-pills-link {
 }
 
 .event-tw .ct-series-a .ct-bar {
-    fill: #428bca;
-    stroke:#428bca;
+    fill: #3c763d;
+    stroke:#3c763d;
+    color:white;
+}
+
+.event-tw .ct-series-b .ct-bar {
+    fill: #f0ad4e;
+    stroke:#f0ad4e;
     color:white;
 }
 
@@ -398,7 +408,12 @@ a.emulate-nav-pills-link {
 }
 
 .event-tl .ct-series-a .ct-point, .event-tl .ct-series-a .ct-line {
-    stroke:#428bca;
+    stroke:#3c763d;
+    color:white;
+}
+
+.event-tl .ct-series-b .ct-point, .event-tl .ct-series-b .ct-line {
+    stroke:#f0ad4e;
     color:white;
 }
 
@@ -636,4 +651,49 @@ only screen and (min-device-pixel-ratio: 1.5) {
 
 span.path {
     margin-right: 5px;
+}
+
+.form-group-inline {
+    vertical-align: top !important;
+}
+
+.ml-1 {
+    margin-left: 15px;
+}
+
+.fa-1_5x {
+    font-size: 1.2em !important;
+}
+
+.category-detail {}
+
+.category-detail h3 {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.category-detail .list-unstyled {
+    margin-top: 5px;
+}
+
+.category-detail .list-unstyled > li {
+    margin-bottom: 5px;
+}
+
+.category-description {
+    border-bottom: 1px solid #eee;
+    margin-bottom: 5px;
+    padding: 2px 0;
+}
+
+.category-description:last-child {
+    border-bottom: 0;
+}
+
+.mr-10 {
+    margin-right: 10px;
+}
+
+.disabled-value {
+    opacity: .5;
 }

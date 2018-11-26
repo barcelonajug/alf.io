@@ -17,11 +17,13 @@
 package alfio.controller;
 
 import alfio.controller.api.support.TicketHelper;
+import alfio.controller.form.ContactAndTicketsForm;
 import alfio.controller.form.PaymentForm;
 import alfio.controller.form.UpdateTicketOwnerForm;
 import alfio.controller.support.SessionUtil;
 import alfio.controller.support.TicketDecorator;
 import alfio.manager.*;
+import alfio.manager.EuVatChecker.SameCountryValidator;
 import alfio.manager.support.PaymentResult;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.*;
@@ -29,17 +31,20 @@ import alfio.model.TicketReservation.TicketReservationStatus;
 import alfio.model.result.ValidationResult;
 import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
+import alfio.model.transaction.PaymentContext;
 import alfio.model.transaction.PaymentProxy;
+import alfio.model.transaction.PaymentToken;
 import alfio.model.user.Organization;
 import alfio.repository.EventRepository;
 import alfio.repository.TicketFieldRepository;
-import alfio.repository.TicketRepository;
+import alfio.repository.TicketReservationRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.util.ErrorsCode;
 import alfio.util.TemplateManager;
 import alfio.util.TemplateResource;
 import lombok.AllArgsConstructor;
 import lombok.extern.log4j.Log4j2;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
 import org.springframework.context.MessageSource;
@@ -48,6 +53,8 @@ import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.validation.BindingResult;
+import org.springframework.validation.Errors;
+import org.springframework.validation.ValidationUtils;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
@@ -56,10 +63,13 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import org.springframework.web.servlet.support.RequestContextUtils;
 
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpSession;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
+import static alfio.model.PriceContainer.VatStatus.*;
 import static alfio.model.system.Configuration.getSystemConfiguration;
 import static alfio.model.system.ConfigurationKeys.*;
 import static java.util.stream.Collectors.toList;
@@ -81,26 +91,13 @@ public class ReservationController {
     private final TicketHelper ticketHelper;
     private final TicketFieldRepository ticketFieldRepository;
     private final PaymentManager paymentManager;
-    private final TicketRepository ticketRepository;
     private final EuVatChecker vatChecker;
-    private final MollieManager mollieManager;
     private final RecaptchaService recaptchaService;
+    private final TicketReservationRepository ticketReservationRepository;
 
     @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/book", method = RequestMethod.GET)
-    public String showPaymentPage(@PathVariable("eventName") String eventName,
+    public String showBookingPage(@PathVariable("eventName") String eventName,
                                   @PathVariable("reservationId") String reservationId,
-                                  //paypal related parameters
-                                  @RequestParam(value = "paymentId", required = false) String paypalPaymentId,
-                                  @RequestParam(value = "PayerID", required = false) String paypalPayerID,
-                                  @RequestParam(value = "paypal-success", required = false) Boolean isPaypalSuccess,
-                                  @RequestParam(value = "paypal-error", required = false) Boolean isPaypalError,
-                                  @RequestParam(value = "fullName", required = false) String fullName,
-                                  @RequestParam(value = "firstName", required = false) String firstName,
-                                  @RequestParam(value = "lastName", required = false) String lastName,
-                                  @RequestParam(value = "email", required = false) String email,
-                                  @RequestParam(value = "billingAddress", required = false) String billingAddress,
-                                  @RequestParam(value = "hmac", required = false) String hmac,
-                                  @RequestParam(value = "postponeAssignment", required = false) Boolean postponeAssignment,
                                   Model model,
                                   Locale locale) {
 
@@ -112,72 +109,51 @@ public class ReservationController {
                         return redirectReservation(Optional.of(reservation), eventName, reservationId);
                     }
 
-                    List<Ticket> ticketsInReservation = ticketReservationManager.findTicketsInReservation(reservationId);
-                    if (Boolean.TRUE.equals(isPaypalSuccess) && paypalPayerID != null && paypalPaymentId != null) {
-                        model.addAttribute("paypalPaymentId", paypalPaymentId)
-                            .addAttribute("paypalPayerID", paypalPayerID)
-                            .addAttribute("paypalCheckoutConfirmation", true)
-                            .addAttribute("fullName", fullName)
-                            .addAttribute("firstName", firstName)
-                            .addAttribute("lastName", lastName)
-                            .addAttribute("email", email)
-                            .addAttribute("billingAddress", billingAddress)
-                            .addAttribute("hmac", hmac)
-                            .addAttribute("postponeAssignment", Boolean.TRUE.equals(postponeAssignment))
-                            .addAttribute("showPostpone", Boolean.TRUE.equals(postponeAssignment));
-                    } else {
-                        model.addAttribute("paypalCheckoutConfirmation", false)
-                             .addAttribute("postponeAssignment", false)
-                             .addAttribute("showPostpone", ticketsInReservation.size() > 1);
+                    TicketReservationAdditionalInfo additionalInfo = ticketReservationRepository.getAdditionalInfo(reservationId);
+                    if (additionalInfo.hasBeenValidated()) {
+                        return "redirect:/event/" + eventName + "/reservation/" + reservationId + "/overview";
                     }
 
-                    try {
-                        model.addAttribute("delayForOfflinePayment", Math.max(1, TicketReservationManager.getOfflinePaymentWaitingPeriod(event, configurationManager)));
-                    } catch (TicketReservationManager.OfflinePaymentException e) {
-                        if(event.getAllowedPaymentProxies().contains(PaymentProxy.OFFLINE)) {
-                            log.error("Already started event {} has been found with OFFLINE payment enabled" , event.getDisplayName() , e);
-                        }
-                        model.addAttribute("delayForOfflinePayment", 0);
-                    }
+                    Function<ConfigurationKeys, Configuration.ConfigurationPathKey> partialConfig = Configuration.from(event.getOrganizationId(), event.getId());
+
+                    Configuration.ConfigurationPathKey forceAssignmentKey = partialConfig.apply(FORCE_TICKET_OWNER_ASSIGNMENT_AT_RESERVATION);
+                    boolean forceAssignment = configurationManager.getBooleanConfigValue(forceAssignmentKey, false);
+
+                    List<Ticket> ticketsInReservation = ticketReservationManager.findTicketsInReservation(reservationId);
+
+                    model.addAttribute("postponeAssignment", false)
+                         .addAttribute("showPostpone", !forceAssignment && ticketsInReservation.size() > 1 && !ticketReservationManager.containsCategoriesLinkedToGroups(reservationId, event.getId()));
+
 
                     OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, locale);
-                    List<PaymentProxy> activePaymentMethods = paymentManager.getPaymentMethods(event.getOrganizationId())
-                        .stream()
-                        .filter(p -> TicketReservationManager.isValidPaymentMethod(p, event, configurationManager))
-                        .map(PaymentManager.PaymentMethod::getPaymentProxy)
-                        .collect(toList());
 
-                    if(orderSummary.getFree() || activePaymentMethods.stream().anyMatch(p -> p == PaymentProxy.OFFLINE || p == PaymentProxy.ON_SITE)) {
-                        boolean captchaForOfflinePaymentEnabled = configurationManager.isRecaptchaForOfflinePaymentEnabled(event);
-                        model.addAttribute("captchaRequestedForOffline", captchaForOfflinePaymentEnabled)
-                            .addAttribute("recaptchaApiKey", configurationManager.getStringConfigValue(Configuration.getSystemConfiguration(RECAPTCHA_API_KEY), null))
-                            .addAttribute("captchaRequestedFreeOfCharge", orderSummary.getFree() && captchaForOfflinePaymentEnabled);
-                    }
+                    //FIXME recaptcha for free orders
 
-                    boolean invoiceAllowed = orderSummary.getDisplayVat()
-                        && (configurationManager.hasAllConfigurationsForInvoice(event) || vatChecker.isVatCheckingEnabledFor(event.getOrganizationId()));
-                    model.addAttribute("multiplePaymentMethods" , activePaymentMethods.size() > 1 )
-                        .addAttribute("orderSummary", orderSummary)
+                    boolean invoiceAllowed = configurationManager.hasAllConfigurationsForInvoice(event) || vatChecker.isVatCheckingEnabledFor(event.getOrganizationId());
+                    boolean onlyInvoice = invoiceAllowed && configurationManager.getBooleanConfigValue(partialConfig.apply(ConfigurationKeys.GENERATE_ONLY_INVOICE), false);
+
+
+                    ContactAndTicketsForm contactAndTicketsForm = ContactAndTicketsForm.fromExistingReservation(reservation, additionalInfo);
+                    model.addAttribute("orderSummary", orderSummary)
                         .addAttribute("reservationId", reservationId)
                         .addAttribute("reservation", reservation)
                         .addAttribute("pageTitle", "reservation-page.header.title")
                         .addAttribute("event", event)
-                        .addAttribute("activePaymentMethods", activePaymentMethods)
                         .addAttribute("expressCheckoutEnabled", isExpressCheckoutEnabled(event, orderSummary))
                         .addAttribute("useFirstAndLastName", event.mustUseFirstAndLastName())
                         .addAttribute("countries", TicketHelper.getLocalizedCountries(locale))
-                        .addAttribute("euCountries", TicketHelper.getLocalizedEUCountries(locale, configurationManager.getRequiredValue(getSystemConfiguration(ConfigurationKeys.EU_COUNTRIES_LIST))))
+                        .addAttribute("countriesForVat", TicketHelper.getLocalizedCountriesForVat(locale))
+                        .addAttribute("euCountriesForVat", TicketHelper.getLocalizedEUCountriesForVat(locale, configurationManager.getRequiredValue(getSystemConfiguration(ConfigurationKeys.EU_COUNTRIES_LIST))))
                         .addAttribute("euVatCheckingEnabled", vatChecker.isVatCheckingEnabledFor(event.getOrganizationId()))
                         .addAttribute("invoiceIsAllowed", invoiceAllowed)
-                        .addAttribute("billingAddressLabel", invoiceAllowed ? "reservation-page.billing-address" : "reservation-page.receipt-address");
+                        .addAttribute("onlyInvoice", onlyInvoice)
+                        .addAttribute("vatNrIsLinked", orderSummary.isVatExempt() || contactAndTicketsForm.getHasVatCountryCode())
+                        .addAttribute("attendeeAutocompleteEnabled", ticketsInReservation.size() == 1 && configurationManager.getBooleanConfigValue(partialConfig.apply(ENABLE_ATTENDEE_AUTOCOMPLETE), true))
+                        .addAttribute("billingAddressLabel", invoiceAllowed ? "reservation-page.billing-address" : "reservation-page.receipt-address")
+                        .addAttribute("customerReferenceEnabled", configurationManager.getBooleanConfigValue(partialConfig.apply(ENABLE_CUSTOMER_REFERENCE), false));
 
-                    boolean includeStripe = !orderSummary.getFree() && activePaymentMethods.contains(PaymentProxy.STRIPE);
-                    model.addAttribute("includeStripe", includeStripe);
-                    if (includeStripe) {
-                        model.addAttribute("stripe_p_key", paymentManager.getStripePublicKey(event));
-                    }
                     Map<String, Object> modelMap = model.asMap();
-                    modelMap.putIfAbsent("paymentForm", PaymentForm.fromExistingReservation(reservation));
+                    modelMap.putIfAbsent("paymentForm", contactAndTicketsForm);
                     modelMap.putIfAbsent("hasErrors", false);
 
                     boolean hasPaidSupplement = ticketReservationManager.hasPaidSupplements(reservationId);
@@ -189,8 +165,8 @@ public class ReservationController {
                                 List<TicketDecorator> decorators = TicketDecorator.decorate(e.getValue(),
                                     !hasPaidSupplement && configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), category.getId(), ALLOW_FREE_TICKETS_CANCELLATION), false),
                                     eventManager.checkTicketCancellationPrerequisites(),
-                                    ticket -> ticketHelper.findTicketFieldConfigurationAndValue(event.getId(), ticket, locale),
-                                    true, (t) -> "tickets['"+t.getUuid()+"'].");
+                                    ticketHelper::findTicketFieldConfigurationAndValue,
+                                    true, (t) -> "tickets["+t.getUuid()+"].");
                                 return Pair.of(category, decorators);
                             })
                             .collect(toList()));
@@ -213,7 +189,7 @@ public class ReservationController {
             Optional<TicketReservation> tr = ticketReservationManager.findById(reservationId);
             return tr.filter(r -> r.getStatus() == TicketReservationStatus.COMPLETE)
                 .map(reservation -> {
-                    SessionUtil.removeSpecialPriceData(request);
+                    SessionUtil.cleanupSession(request);
                     model.addAttribute("reservationId", reservationId);
                     model.addAttribute("reservation", reservation);
                     model.addAttribute("confirmationEmailSent", confirmationEmailSent);
@@ -233,7 +209,7 @@ public class ReservationController {
                                 List<TicketDecorator> decorators = TicketDecorator.decorate(e.getValue(),
                                     !hasPaidSupplement && configurationManager.getBooleanConfigValue(Configuration.from(ev.getOrganizationId(), ev.getId(), category.getId(), ALLOW_FREE_TICKETS_CANCELLATION), false),
                                     eventManager.checkTicketCancellationPrerequisites(),
-                                    ticket -> ticketHelper.findTicketFieldConfigurationAndValue(ev.getId(), ticket, locale),
+                                    ticketHelper::findTicketFieldConfigurationAndValue,
                                     tickets.size() == 1, TicketDecorator.EMPTY_PREFIX_GENERATOR);
                                 return Pair.of(category, decorators);
                             })
@@ -252,6 +228,144 @@ public class ReservationController {
                 }).orElseGet(() -> redirectReservation(tr, eventName, reservationId));
         }).orElse("redirect:/");
     }
+
+    @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/validate-to-overview", method = RequestMethod.POST)
+    public String validateToOverview(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId,
+                                     ContactAndTicketsForm contactAndTicketsForm, BindingResult bindingResult,
+                                     Model model, HttpServletRequest request, Locale locale, RedirectAttributes redirectAttributes) {
+
+        Optional<Event> eventOptional = eventRepository.findOptionalByShortName(eventName);
+        Optional<String> redirectForFailure = checkReservation(contactAndTicketsForm.isBackFromOverview(), contactAndTicketsForm.shouldCancelReservation(), eventName, reservationId, request, eventOptional);
+        if(redirectForFailure.isPresent()) { //ugly
+            return redirectForFailure.get();
+        }
+
+        Event event = eventOptional.get();
+
+
+        final TotalPrice reservationCost = ticketReservationManager.totalReservationCostWithVAT(reservationId);
+        Configuration.ConfigurationPathKey forceAssignmentKey = Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.FORCE_TICKET_OWNER_ASSIGNMENT_AT_RESERVATION);
+        boolean forceAssignment = configurationManager.getBooleanConfigValue(forceAssignmentKey, false);
+
+        if(forceAssignment || ticketReservationManager.containsCategoriesLinkedToGroups(reservationId, event.getId())) {
+            contactAndTicketsForm.setPostponeAssignment(false);
+        }
+
+        Configuration.ConfigurationPathKey invoiceOnlyKey = Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.GENERATE_ONLY_INVOICE);
+        boolean invoiceOnly = configurationManager.getBooleanConfigValue(invoiceOnlyKey, false);
+
+        if(invoiceOnly && reservationCost.getPriceWithVAT() > 0) {
+            //override, that's why we save it
+            contactAndTicketsForm.setInvoiceRequested(true);
+        }
+
+        CustomerName customerName = new CustomerName(contactAndTicketsForm.getFullName(), contactAndTicketsForm.getFirstName(), contactAndTicketsForm.getLastName(), event, false);
+
+        ticketReservationRepository.resetVat(reservationId);
+        if(contactAndTicketsForm.isBusiness()) {
+            checkAndApplyVATRules(eventName, reservationId, contactAndTicketsForm, bindingResult, event);
+        }
+
+        //persist data
+        ticketReservationManager.updateReservation(reservationId, customerName, contactAndTicketsForm.getEmail(),
+            contactAndTicketsForm.getBillingAddressCompany(), contactAndTicketsForm.getBillingAddressLine1(), contactAndTicketsForm.getBillingAddressLine2(),
+            contactAndTicketsForm.getBillingAddressZip(), contactAndTicketsForm.getBillingAddressCity(), contactAndTicketsForm.getVatCountryCode(),
+            contactAndTicketsForm.getCustomerReference(), contactAndTicketsForm.getVatNr(), contactAndTicketsForm.isInvoiceRequested(),
+            contactAndTicketsForm.canSkipVatNrCheck(), false);
+        assignTickets(event.getShortName(), reservationId, contactAndTicketsForm, bindingResult, request, true, true);
+        //
+
+        //
+        contactAndTicketsForm.validate(bindingResult, event, ticketFieldRepository.findAdditionalFieldsForEvent(event.getId()), new SameCountryValidator(vatChecker, event.getOrganizationId(), event.getId(), reservationId));
+        //
+
+        if(bindingResult.hasErrors()) {
+            SessionUtil.addToFlash(bindingResult, redirectAttributes);
+            return "redirect:/event/" + eventName + "/reservation/" + reservationId + "/book";
+        }
+        ticketReservationRepository.updateValidationStatus(reservationId, true);
+
+
+        return "redirect:/event/" + eventName + "/reservation/" + reservationId + "/overview";
+    }
+
+    private void checkAndApplyVATRules(String eventName, String reservationId, ContactAndTicketsForm contactAndTicketsForm, BindingResult bindingResult, Event event) {
+        // VAT handling
+        String country = contactAndTicketsForm.getVatCountryCode();
+
+        // validate VAT presence if EU mode is enabled
+        if(vatChecker.isVatCheckingEnabledFor(event.getOrganizationId()) && isEUCountry(country)) {
+            ValidationUtils.rejectIfEmptyOrWhitespace(bindingResult, "vatNr", "error.emptyField");
+        }
+
+        try {
+            Optional<VatDetail> vatDetail = eventRepository.findOptionalByShortName(eventName)
+                .flatMap(e -> ticketReservationRepository.findOptionalReservationById(reservationId).map(r -> Pair.of(e, r)))
+                .filter(e -> EnumSet.of(INCLUDED, NOT_INCLUDED).contains(e.getKey().getVatStatus()))
+                .filter(e -> vatChecker.isVatCheckingEnabledFor(e.getKey().getOrganizationId()))
+                .flatMap(e -> vatChecker.checkVat(contactAndTicketsForm.getVatNr(), country, e.getKey()));
+
+
+            vatDetail.ifPresent(vatValidation -> {
+                if (!vatValidation.isValid()) {
+                    bindingResult.rejectValue("vatNr", "error.vat");
+                } else {
+                    PriceContainer.VatStatus vatStatus = determineVatStatus(event.getVatStatus(), vatValidation.isVatExempt());
+                    ticketReservationRepository.updateBillingData(vatStatus, StringUtils.trimToNull(vatValidation.getVatNr()), country, contactAndTicketsForm.isInvoiceRequested(), reservationId);
+                }
+            });
+        } catch (IllegalStateException ise) {//vat checker failure
+            bindingResult.rejectValue("vatNr", "error.vatVIESDown");
+        }
+    }
+
+    @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/overview", method = RequestMethod.GET)
+    public String showOverview(@PathVariable("eventName") String eventName,
+                               @PathVariable("reservationId") String reservationId,
+                               Locale locale,
+                               Model model,
+                               HttpSession session) {
+
+        return eventRepository.findOptionalByShortName(eventName)
+            .map(event -> ticketReservationManager.findById(reservationId)
+                .map(reservation -> {
+                    if (reservation.getStatus() != TicketReservationStatus.PENDING) {
+                        return redirectReservation(Optional.of(reservation), eventName, reservationId);
+                    }
+                    TicketReservationAdditionalInfo additionalInfo = ticketReservationRepository.getAdditionalInfo(reservationId);
+                    if (!additionalInfo.hasBeenValidated()) {
+                        return "redirect:/event/" + eventName + "/reservation/" + reservationId + "/book";
+                    }
+
+                    OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, locale);
+
+                    List<PaymentProxy> activePaymentMethods;
+                    if(session.getAttribute(PaymentManager.PAYMENT_TOKEN) != null) {
+                        model.addAttribute("tokenAcquired", true);
+                        activePaymentMethods = Collections.singletonList(((PaymentToken)session.getAttribute(PaymentManager.PAYMENT_TOKEN)).getPaymentProvider());
+                    } else {
+                        activePaymentMethods = paymentManager.getPaymentMethods(event)
+                            .stream()
+                            .filter(p -> TicketReservationManager.isValidPaymentMethod(p, event, configurationManager))
+                            .map(PaymentManager.PaymentMethodDTO::getPaymentProxy)
+                            .collect(toList());
+                    }
+
+                    model.addAllAttributes(paymentManager.loadModelOptionsFor(activePaymentMethods, event));
+
+                    model.addAttribute("multiplePaymentMethods" , activePaymentMethods.size() > 1 )
+                        .addAttribute("activePaymentMethods", activePaymentMethods);
+
+                    model.addAttribute("orderSummary", orderSummary)
+                        .addAttribute("reservationId", reservationId)
+                        .addAttribute("reservation", reservation)
+                        .addAttribute("pageTitle", "reservation-page.header.title")
+                        .addAttribute("event", event);
+                    return "/event/overview";
+                }).orElseGet(() -> redirectReservation(Optional.empty(), eventName, reservationId)))
+            .orElse("redirect:/");
+    }
+
 
     @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/failure", method = RequestMethod.GET)
     public String showFailurePage(@PathVariable("eventName") String eventName,
@@ -372,7 +486,8 @@ public class ReservationController {
 
         switch(reservation.getStatus()) {
             case PENDING:
-                return baseUrl + "/book";
+                TicketReservationAdditionalInfo additionalInfo = ticketReservationRepository.getAdditionalInfo(reservationId);
+                return additionalInfo.hasBeenValidated() ? baseUrl + "/overview" : baseUrl + "/book";
             case COMPLETE:
                 return baseUrl + "/success";
             case OFFLINE_PAYMENT:
@@ -390,91 +505,83 @@ public class ReservationController {
 
     @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}", method = RequestMethod.POST)
     public String handleReservation(@PathVariable("eventName") String eventName,
-            @PathVariable("reservationId") String reservationId, PaymentForm paymentForm, BindingResult bindingResult,
-            Model model, HttpServletRequest request, Locale locale, RedirectAttributes redirectAttributes) {
+                                    @PathVariable("reservationId") String reservationId, 
+                                    PaymentForm paymentForm, 
+                                    BindingResult bindingResult,
+                                    Model model, 
+                                    HttpServletRequest request, 
+                                    Locale locale, 
+                                    RedirectAttributes redirectAttributes,
+                                    HttpSession session) {
 
         Optional<Event> eventOptional = eventRepository.findOptionalByShortName(eventName);
-        if (!eventOptional.isPresent()) {
-            return "redirect:/";
+        Optional<String> redirectForFailure = checkReservation(paymentForm.isBackFromOverview(), paymentForm.shouldCancelReservation(), eventName, reservationId, request, eventOptional);
+        if(redirectForFailure.isPresent()) { //ugly
+            return redirectForFailure.get();
         }
-        Event event = eventOptional.get();
-        Optional<TicketReservation> ticketReservation = ticketReservationManager.findById(reservationId);
-        if (!ticketReservation.isPresent()) {
-            return redirectReservation(ticketReservation, eventName, reservationId);
+
+        Event event = eventOptional.orElseThrow(IllegalStateException::new);
+        Optional<TicketReservation> optionalReservation = ticketReservationManager.findById(reservationId);
+        if (!optionalReservation.isPresent()) {
+            return redirectReservation(optionalReservation, eventName, reservationId);
         }
         if (paymentForm.shouldCancelReservation()) {
             ticketReservationManager.cancelPendingReservation(reservationId, false);
-            SessionUtil.removeSpecialPriceData(request);
+            SessionUtil.cleanupSession(request);
             return "redirect:/event/" + eventName + "/";
         }
-        if (!ticketReservation.get().getValidity().after(new Date())) {
+        if (!optionalReservation.get().getValidity().after(new Date())) {
             bindingResult.reject(ErrorsCode.STEP_2_ORDER_EXPIRED);
         }
 
+        final TicketReservation ticketReservation = optionalReservation.get();
+
         final TotalPrice reservationCost = ticketReservationManager.totalReservationCostWithVAT(reservationId);
+
+        paymentForm.validate(bindingResult, event, reservationCost);
+        if (bindingResult.hasErrors()) {
+            SessionUtil.addToFlash(bindingResult, redirectAttributes);
+            return redirectReservation(optionalReservation, eventName, reservationId);
+        }
+
         if(isCaptchaInvalid(reservationCost.getPriceWithVAT(), paymentForm.getPaymentMethod(), request, event)) {
             log.debug("captcha validation failed.");
             bindingResult.reject(ErrorsCode.STEP_2_CAPTCHA_VALIDATION_FAILED);
         }
 
-        if(paymentForm.getPaymentMethod() != PaymentProxy.PAYPAL || !paymentForm.hasPaypalTokens()) {
-            if(!paymentForm.isPostponeAssignment() && !ticketRepository.checkTicketUUIDs(reservationId, paymentForm.getTickets().keySet())) {
-                bindingResult.reject(ErrorsCode.STEP_2_MISSING_ATTENDEE_DATA);
-            }
-            paymentForm.validate(bindingResult, reservationCost, event, ticketFieldRepository.findAdditionalFieldsForEvent(event.getId()));
-            if (bindingResult.hasErrors()) {
-                SessionUtil.addToFlash(bindingResult, redirectAttributes);
-                return redirectReservation(ticketReservation, eventName, reservationId);
-            }
+        if (bindingResult.hasErrors()) {
+            SessionUtil.addToFlash(bindingResult, redirectAttributes);
+            return redirectReservation(Optional.of(ticketReservation), eventName, reservationId);
         }
 
-        CustomerName customerName = new CustomerName(paymentForm.getFullName(), paymentForm.getFirstName(), paymentForm.getLastName(), event);
+        CustomerName customerName = new CustomerName(ticketReservation.getFullName(), ticketReservation.getFirstName(), ticketReservation.getLastName(), event);
 
-        //handle paypal redirect!
-        if(paymentForm.getPaymentMethod() == PaymentProxy.PAYPAL && !paymentForm.hasPaypalTokens()) {
-            OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, locale);
-            try {
-                String checkoutUrl = paymentManager.createPaypalCheckoutRequest(event, reservationId, orderSummary, customerName,
-                    paymentForm.getEmail(), paymentForm.getBillingAddress(), locale, paymentForm.isPostponeAssignment());
-                assignTickets(eventName, reservationId, paymentForm, bindingResult, request, true);
-                return "redirect:" + checkoutUrl;
-            } catch (Exception e) {
-                bindingResult.reject(ErrorsCode.STEP_2_PAYMENT_REQUEST_CREATION);
-                SessionUtil.addToFlash(bindingResult, redirectAttributes);
-                return redirectReservation(ticketReservation, eventName, reservationId);
-            }
+        OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, locale);
+
+        PaymentToken paymentToken = (PaymentToken) session.getAttribute(PaymentManager.PAYMENT_TOKEN);
+        if(paymentToken == null && StringUtils.isNotEmpty(paymentForm.getGatewayToken())) {
+            paymentToken = paymentManager.buildPaymentToken(paymentForm.getGatewayToken(), paymentForm.getPaymentMethod(), new PaymentContext(event));
         }
+        PaymentSpecification spec = new PaymentSpecification(reservationId, paymentToken, reservationCost.getPriceWithVAT(),
+            event, ticketReservation.getEmail(), customerName, ticketReservation.getBillingAddress(), ticketReservation.getCustomerReference(),
+            locale, ticketReservation.isInvoiceRequested(), !ticketReservation.isDirectAssignmentRequested(),
+            orderSummary, ticketReservation.getVatCountryCode(), ticketReservation.getVatNr(), ticketReservation.getVatStatus(),
+            Boolean.TRUE.equals(paymentForm.getTermAndConditionsAccepted()), Boolean.TRUE.equals(paymentForm.getPrivacyPolicyAccepted()));
 
-        //handle mollie redirect
-        if(paymentForm.getPaymentMethod() == PaymentProxy.MOLLIE) {
-            OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, locale);
-            try {
-                String checkoutUrl = mollieManager.createCheckoutRequest(event, reservationId, orderSummary, customerName,
-                    paymentForm.getEmail(), paymentForm.getBillingAddress(), locale,
-                    paymentForm.isInvoiceRequested(),
-                    paymentForm.getVatCountryCode(),
-                    paymentForm.getVatNr(),
-                    ticketReservation.get().getVatStatus());
-                assignTickets(eventName, reservationId, paymentForm, bindingResult, request, true);
-                return "redirect:" + checkoutUrl;
-            } catch (Exception e) {
-                bindingResult.reject(ErrorsCode.STEP_2_PAYMENT_REQUEST_CREATION);
-                SessionUtil.addToFlash(bindingResult, redirectAttributes);
-                return redirectReservation(ticketReservation, eventName, reservationId);
-            }
+        final PaymentResult status = ticketReservationManager.performPayment(spec, reservationCost, SessionUtil.retrieveSpecialPriceSessionId(request),
+                Optional.ofNullable(paymentForm.getPaymentMethod()));
+
+        if (status.isRedirect()) {
+            return "redirect:" + status.getRedirectUrl();
         }
-        //
-
-        final PaymentResult status = ticketReservationManager.confirm(paymentForm.getToken(), paymentForm.getPaypalPayerID(), event, reservationId, paymentForm.getEmail(),
-            customerName, locale, paymentForm.getBillingAddress(), reservationCost, SessionUtil.retrieveSpecialPriceSessionId(request),
-                Optional.ofNullable(paymentForm.getPaymentMethod()), paymentForm.isInvoiceRequested(), paymentForm.getVatCountryCode(), paymentForm.getVatNr(), ticketReservation.get().getVatStatus());
 
         if(!status.isSuccessful()) {
-            String errorMessageCode = status.getErrorCode().get();
-            MessageSourceResolvable message = new DefaultMessageSourceResolvable(new String[]{errorMessageCode, StripeManager.STRIPE_UNEXPECTED});
+            String errorMessageCode = status.getErrorCode().orElse(StripeCreditCardManager.STRIPE_UNEXPECTED);
+            MessageSourceResolvable message = new DefaultMessageSourceResolvable(new String[]{errorMessageCode, StripeCreditCardManager.STRIPE_UNEXPECTED});
             bindingResult.reject(ErrorsCode.STEP_2_PAYMENT_PROCESSING_ERROR, new Object[]{messageSource.getMessage(message, locale)}, null);
             SessionUtil.addToFlash(bindingResult, redirectAttributes);
-            return redirectReservation(ticketReservation, eventName, reservationId);
+            SessionUtil.removePaymentToken(request);
+            return redirectReservation(optionalReservation, eventName, reservationId);
         }
 
         //
@@ -483,9 +590,7 @@ public class ReservationController {
         sendReservationCompleteEmailToOrganizer(request, event, reservation);
         //
 
-        if(paymentForm.getPaymentMethod() != PaymentProxy.PAYPAL) {
-            assignTickets(eventName, reservationId, paymentForm, bindingResult, request, paymentForm.getPaymentMethod() == PaymentProxy.OFFLINE);
-        }
+        SessionUtil.cleanupSession(request);
 
         return "redirect:/event/" + eventName + "/reservation/" + reservationId + "/success";
     }
@@ -496,15 +601,16 @@ public class ReservationController {
                 && !recaptchaService.checkRecaptcha(request);
     }
 
-    private void assignTickets(String eventName, String reservationId, PaymentForm paymentForm, BindingResult bindingResult, HttpServletRequest request, boolean preAssign) {
-        if(!paymentForm.isPostponeAssignment()) {
-            paymentForm.getTickets().forEach((ticketId, owner) -> {
+    private void assignTickets(String eventName, String reservationId, ContactAndTicketsForm contactAndTicketsForm, BindingResult bindingResult, HttpServletRequest request, boolean preAssign, boolean skipValidation) {
+        if(!contactAndTicketsForm.isPostponeAssignment()) {
+            contactAndTicketsForm.getTickets().forEach((ticketId, owner) -> {
                 if (preAssign) {
-                    ticketHelper.preAssignTicket(eventName, reservationId, ticketId, owner, Optional.of(bindingResult), request, (tr) -> {
+                    Optional<Errors> bindingResultOptional = skipValidation ? Optional.empty() : Optional.of(bindingResult);
+                    ticketHelper.preAssignTicket(eventName, reservationId, ticketId, owner, bindingResultOptional, request, (tr) -> {
                     }, Optional.empty());
                 } else {
                     ticketHelper.assignTicket(eventName, ticketId, owner, Optional.of(bindingResult), request, (tr) -> {
-                    }, Optional.empty());
+                    }, Optional.empty(), true);
                 }
             });
         }
@@ -538,7 +644,7 @@ public class ReservationController {
                                        HttpServletRequest request,
                                        Model model) throws Exception {
 
-        Optional<Triple<ValidationResult, Event, Ticket>> result = ticketHelper.assignTicket(eventName, reservationId, ticketIdentifier, updateTicketOwner, Optional.of(bindingResult), request, model);
+        Optional<Triple<ValidationResult, Event, Ticket>> result = ticketHelper.assignTicket(eventName, ticketIdentifier, updateTicketOwner, Optional.of(bindingResult), request, model);
         return result.map(t -> "redirect:/event/"+t.getMiddle().getShortName()+"/reservation/"+t.getRight().getTicketsReservationId()+"/success").orElse("redirect:/");
     }
 
@@ -560,5 +666,41 @@ public class ReservationController {
 
     private boolean isExpressCheckoutEnabled(Event event, OrderSummary orderSummary) {
         return orderSummary.getTicketAmount() == 1 && ticketFieldRepository.countRequiredAdditionalFieldsForEvent(event.getId()) == 0;
+    }
+
+    private Optional<String> checkReservation(boolean backFromOverview, boolean cancelReservation, String eventName, String reservationId, HttpServletRequest request, Optional<Event> eventOptional) {
+
+        if (!eventOptional.isPresent()) {
+            return Optional.of("redirect:/");
+        }
+
+        Optional<TicketReservation> ticketReservation = ticketReservationManager.findById(reservationId);
+        if (!ticketReservation.isPresent() || ticketReservation.get().getStatus() != TicketReservationStatus.PENDING) {
+            return Optional.of(redirectReservation(ticketReservation, eventName, reservationId));
+        }
+
+        if(backFromOverview) {
+            ticketReservationRepository.updateValidationStatus(reservationId, false);
+            return Optional.of("redirect:/event/" + eventName + "/reservation/" + reservationId);
+        }
+
+        if (cancelReservation) {
+            ticketReservationManager.cancelPendingReservation(reservationId, false);    //FIXME
+            SessionUtil.cleanupSession(request);
+            return Optional.of("redirect:/event/" + eventName + "/");
+        }
+        return Optional.empty();
+    }
+
+    private boolean isEUCountry(String countryCode) {
+        return configurationManager.getRequiredValue(getSystemConfiguration(ConfigurationKeys.EU_COUNTRIES_LIST)).contains(countryCode);
+    }
+
+
+    private static PriceContainer.VatStatus determineVatStatus(PriceContainer.VatStatus current, boolean isVatExempt) {
+        if(!isVatExempt) {
+            return current;
+        }
+        return current == NOT_INCLUDED ? NOT_INCLUDED_EXEMPT : INCLUDED_EXEMPT;
     }
 }

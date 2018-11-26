@@ -18,13 +18,14 @@
 package alfio.controller.api.admin;
 
 import alfio.controller.api.support.PageAndContent;
+import alfio.extension.Extension;
+import alfio.extension.ExtensionService;
 import alfio.manager.user.UserManager;
 import alfio.model.Event;
 import alfio.model.ExtensionLog;
 import alfio.model.ExtensionSupport;
-import alfio.model.ExtensionSupport.*;
-import alfio.extension.Extension;
-import alfio.extension.ExtensionService;
+import alfio.model.ExtensionSupport.ExtensionMetadataValue;
+import alfio.model.ExtensionSupport.ExtensionParameterMetadataAndValue;
 import alfio.model.user.Organization;
 import alfio.model.user.User;
 import alfio.repository.EventRepository;
@@ -47,6 +48,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @RestController
@@ -80,7 +82,7 @@ public class ExtensionApiController {
 
     @RequestMapping(value = "/sample", method = RequestMethod.GET)
     public ExtensionSupport getSample() {
-        return new ExtensionSupport("-", "", null, true, true, SAMPLE_JS);
+        return new ExtensionSupport(null, "-", "", null, true, true, SAMPLE_JS);
     }
 
     @RequestMapping(value = "", method = RequestMethod.POST)
@@ -99,6 +101,7 @@ public class ExtensionApiController {
             extensionService.createOrUpdate(previousPath, previousName, script);
             return ResponseEntity.ok(SerializablePair.of(true, null));
         } catch (Throwable t) {
+            log.error("unexpected exception", t);
             return ResponseEntity.badRequest().body(SerializablePair.of(false, t.getMessage()));
         }
     }
@@ -131,20 +134,48 @@ public class ExtensionApiController {
             .stream().collect(Collectors.groupingBy(ExtensionParameterMetadataAndValue::getExtensionId));
     }
 
-    @RequestMapping(value = "/setting/organization/{orgShortName}", method = RequestMethod.GET)
-    public Map<Integer, List<ExtensionParameterMetadataAndValue>> getParametersFor(@PathVariable("orgShortName") String orgShortName, Principal principal) {
-        Organization org = organizationRepository.findByName(orgShortName).orElseThrow(IllegalStateException::new);
+    @PostMapping("/setting/system/bulk-update")
+    public void bulkUpdateSystem(@RequestBody List<ExtensionMetadataValue> toUpdate, Principal principal) {
+        ensureAdmin(principal);
+        ensureIdsArePresent(toUpdate, extensionService.getConfigurationParametersFor("-", "-%", "SYSTEM"));
+        extensionService.bulkUpdateSystemSettings(toUpdate);
+    }
+
+    @DeleteMapping("/setting/system/{id}")
+    public void deleteSystemSettingValue(@PathVariable("id") int id, Principal principal) {
+        ensureAdmin(principal);
+        extensionService.deleteSettingValue(id, "-");
+    }
+
+    @RequestMapping(value = "/setting/organization/{orgId}", method = RequestMethod.GET)
+    public Map<Integer, List<ExtensionParameterMetadataAndValue>> getParametersFor(@PathVariable("orgId") int orgId, Principal principal) {
+        Organization org = organizationRepository.getById(orgId);
         ensureOrganization(principal, org);
         return extensionService.getConfigurationParametersFor("-" + org.getId(), "-" + org.getId()+"-%", "ORGANIZATION")
             .stream().collect(Collectors.groupingBy(ExtensionParameterMetadataAndValue::getExtensionId));
     }
 
-    @RequestMapping(value = "/setting/organization/{orgShortName}/event/{shortName}", method = RequestMethod.GET)
-    public Map<Integer, List<ExtensionParameterMetadataAndValue>> getParametersFor(@PathVariable("orgShortName") String orgShortName,
+    @PostMapping("/setting/organization/{orgId}/bulk-update")
+    public void bulkUpdateOrganization(@PathVariable("orgId") int orgId, @RequestBody List<ExtensionMetadataValue> toUpdate, Principal principal) {
+        Organization org = organizationRepository.getById(orgId);
+        ensureOrganization(principal, org);
+        ensureIdsArePresent(toUpdate, extensionService.getConfigurationParametersFor("-" + org.getId(), "-" + org.getId()+"-%", "ORGANIZATION"));
+        extensionService.bulkUpdateOrganizationSettings(org, toUpdate);
+    }
+
+    @DeleteMapping("/setting/organization/{orgId}/{id}")
+    public void deleteOrganizationSettingValue(@PathVariable("orgId") int orgId, @PathVariable("id") int id, Principal principal) {
+        Organization org = organizationRepository.getById(orgId);
+        ensureOrganization(principal, org);
+        extensionService.deleteSettingValue(id, "-" + org.getId());
+    }
+
+    @RequestMapping(value = "/setting/organization/{orgId}/event/{shortName}", method = RequestMethod.GET)
+    public Map<Integer, List<ExtensionParameterMetadataAndValue>> getParametersFor(@PathVariable("orgId") int orgId,
                                                                      @PathVariable("shortName") String eventShortName,
                                                                      Principal principal) {
 
-        Organization org = organizationRepository.findByName(orgShortName).orElseThrow(IllegalStateException::new);
+        Organization org = organizationRepository.getById(orgId);
         ensureOrganization(principal, org);
         Event event = eventRepository.findByShortName(eventShortName);
         ensureEventInOrganization(org, event);
@@ -152,6 +183,37 @@ public class ExtensionApiController {
         return extensionService.getConfigurationParametersFor(pattern, pattern,"EVENT")
             .stream().collect(Collectors.groupingBy(ExtensionParameterMetadataAndValue::getExtensionId));
     }
+
+    @PostMapping("/setting/organization/{orgId}/event/{shortName}/bulk-update")
+    public void bulkUpdateEvent(@PathVariable("orgId") int orgId, @PathVariable("shortName") String eventShortName,
+                                @RequestBody List<ExtensionMetadataValue> toUpdate, Principal principal) {
+        Organization org = organizationRepository.getById(orgId);
+        ensureOrganization(principal, org);
+        Event event = eventRepository.findByShortName(eventShortName);
+        ensureEventInOrganization(org, event);
+        String pattern = String.format("-%d-%d", org.getId(), event.getId());
+        ensureIdsArePresent(toUpdate, extensionService.getConfigurationParametersFor(pattern, pattern, "EVENT"));
+        extensionService.bulkUpdateEventSettings(org, event, toUpdate);
+    }
+
+    @DeleteMapping("/setting/organization/{orgId}/event/{shortName}/{id}")
+    public void deleteEventSettingValue(@PathVariable("orgId") int orgId, @PathVariable("shortName") String eventShortName, @PathVariable("id") int id, Principal principal) {
+        Organization org = organizationRepository.getById(orgId);
+        ensureOrganization(principal, org);
+        Event event = eventRepository.findByShortName(eventShortName);
+        ensureEventInOrganization(org, event);
+        extensionService.deleteSettingValue(id, String.format("-%d-%d", org.getId(), event.getId()));
+    }
+
+    //check that the ids are coherent
+    private static void ensureIdsArePresent(List<ExtensionMetadataValue> toUpdate, List<ExtensionParameterMetadataAndValue> system) {
+        Set<Integer> validIds = system.stream().map(ExtensionParameterMetadataAndValue::getId).collect(Collectors.toSet());
+        Set<Integer> toUpdateIds = toUpdate.stream().map(ExtensionMetadataValue::getId).collect(Collectors.toSet());
+        if(!validIds.containsAll(toUpdateIds)) {
+            throw new IllegalStateException();
+        }
+    }
+
     //
 
     @RequestMapping(value = "/log")

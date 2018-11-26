@@ -16,9 +16,11 @@
  */
 package alfio.model;
 
+import alfio.util.MonetaryUtil;
 import lombok.Data;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Data
 public class OrderSummary {
@@ -31,6 +33,7 @@ public class OrderSummary {
     private final boolean cashPayment;
     private final String vatPercentage;
     private final PriceContainer.VatStatus vatStatus;
+    private final String refundedAmount;
 
     /* lol jmustache */
     public boolean getFree() {
@@ -53,11 +56,42 @@ public class OrderSummary {
         return summary.stream().filter(s-> SummaryRow.SummaryType.TICKET == s.getType()).mapToInt(SummaryRow::getAmount).sum();
     }
 
+    public List<SummaryRow> getSummary() {
+
+        //filter out the promotions code that have been inserted in the order but not used
+        return summary.stream()
+            .filter(s-> !(SummaryRow.SummaryType.PROMOTION_CODE == s.getType() && s.getAmount() == 0))
+            .collect(Collectors.toList());
+    }
+
     public boolean getSingleTicketOrder() {
         return getTicketAmount() == 1;
     }
 
     public boolean getDisplayVat() {
-        return !PriceContainer.VatStatus.isVatExempt(vatStatus);
+        return !isVatExempt();
+    }
+
+    public boolean isVatExempt() {
+        return PriceContainer.VatStatus.isVatExempt(vatStatus);
+    }
+
+    public String getRefundedAmount() {
+        return refundedAmount;
+    }
+
+    public String getTotalNetPrice() {
+        if(free) {
+            return null;
+        }
+        return MonetaryUtil.formatCents(originalTotalPrice.getPriceWithVAT() - originalTotalPrice.getVAT());
+    }
+
+    public int getPriceInCents() {
+        return originalTotalPrice.getPriceWithVAT();
+    }
+
+    public String getDescriptionForPayment() {
+        return summary.stream().filter(r -> r.getType() != SummaryRow.SummaryType.PROMOTION_CODE).map(SummaryRow::getDescriptionForPayment).collect(Collectors.joining(", "));
     }
 }

@@ -30,6 +30,7 @@ import lombok.AllArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.*;
@@ -43,11 +44,13 @@ import static java.util.stream.Collectors.toMap;
 
 @Component
 @AllArgsConstructor
+@Transactional(readOnly = true)
 public class EventStatisticsManager {
 
     private final EventRepository eventRepository;
     private final EventDescriptionRepository eventDescriptionRepository;
     private final TicketRepository ticketRepository;
+    private final TicketSearchRepository ticketSearchRepository;
     private final TicketCategoryRepository ticketCategoryRepository;
     private final TicketCategoryDescriptionRepository ticketCategoryDescriptionRepository;
     private final TicketReservationRepository ticketReservationRepository;
@@ -128,7 +131,7 @@ public class EventStatisticsManager {
         Event event = eventRepository.findById(eventId);
         String toSearch = prepareSearchTerm(search);
         final int pageSize = 30;
-        return ticketRepository.findAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, page * pageSize, pageSize, toSearch).stream()
+        return ticketSearchRepository.findAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, page * pageSize, pageSize, toSearch).stream()
             .map(t -> new TicketWithStatistic(t.getTicket(), event, t.getTicketReservation(), event.getZoneId(), t.getTransaction()))
             .sorted()
             .collect(Collectors.toList());
@@ -136,7 +139,7 @@ public class EventStatisticsManager {
 
     public Integer countModifiedTicket(int eventId, int categoryId, String search) {
         String toSearch = prepareSearchTerm(search);
-        return ticketRepository.countAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, toSearch);
+        return ticketSearchRepository.countAllModifiedTicketsWithReservationAndTransaction(eventId, categoryId, toSearch);
     }
 
     public Predicate<Event> noSeatsAvailable() {
@@ -150,8 +153,12 @@ public class EventStatisticsManager {
         };
     }
 
-    public List<TicketSoldStatistic> getTicketSoldStatistics(int eventId, Date from, Date to) {
+    public List<TicketsByDateStatistic> getTicketSoldStatistics(int eventId, Date from, Date to) {
         return ticketReservationRepository.getSoldStatistic(eventId, from, to);
+    }
+
+    public List<TicketsByDateStatistic> getTicketReservedStatistics(int eventId, Date from, Date to) {
+        return ticketReservationRepository.getReservedStatistic(eventId, from, to);
     }
 
 

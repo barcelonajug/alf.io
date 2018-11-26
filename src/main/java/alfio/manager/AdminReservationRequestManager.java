@@ -90,7 +90,7 @@ public class AdminReservationRequestManager {
             .orElseGet(() -> Result.error(ErrorCode.ReservationError.UPDATE_FAILED));
     }
 
-    Pair<Integer, Integer> processPendingReservations() {
+    public Pair<Integer, Integer> processPendingReservations() {
         Map<Boolean, List<MapSqlParameterSource>> result = adminReservationRequestRepository.findPendingForUpdate(1000)
             .stream()
             .map(id -> {
@@ -104,7 +104,7 @@ public class AdminReservationRequestManager {
 
         result.values().forEach(list -> {
             try {
-                jdbc.batchUpdate(adminReservationRequestRepository.updateStatus(), list.toArray(new MapSqlParameterSource[list.size()]));
+                jdbc.batchUpdate(adminReservationRequestRepository.updateStatus(), list.toArray(new MapSqlParameterSource[0]));
             } catch(Exception e) {
                 log.fatal("cannot update the status of "+list.size()+" reservations", e);
             }
@@ -172,7 +172,7 @@ public class AdminReservationRequestManager {
             .map(p -> {
                 AdminReservationModification.Attendee attendee = p.getLeft();
                 String language = StringUtils.defaultIfBlank(attendee.getLanguage(), src.getLanguage());
-                CustomerData cd = new CustomerData(attendee.getFirstName(), attendee.getLastName(), attendee.getEmailAddress(), null, language);
+                CustomerData cd = new CustomerData(attendee.getFirstName(), attendee.getLastName(), attendee.getEmailAddress(), null, language, null, null, null);
                 return new AdminReservationModification(src.getExpiration(), cd, singletonList(p.getRight()), language, src.isUpdateContactData(), src.getNotification());
             });
     }

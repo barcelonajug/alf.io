@@ -1,19 +1,26 @@
 #
-# @APP_NAME@ dockerfile.
+# Alf.io dockerfile.
 #
 
 # Pull base image.
-FROM @BASE_IMAGE@
+FROM adoptopenjdk/openjdk11-openj9
 
-COPY ./@APP_NAME@-@APP_VERSION@-boot.war /alf.io/
+RUN useradd -ms /bin/bash -u 1001 alfio
+RUN apt-get update \
+ && apt-get install --assume-yes apt-utils \
+ && apt-get install --assume-yes software-properties-common \
+ && apt-get install --assume-yes dconf-cli \
+ && apt-get install --assume-yes fontconfig
+
+USER alfio
+COPY ./alfio-@ALFIO_VERSION@-boot.war /home/alfio/alfio-boot.war
 
 # Define working directory.
-WORKDIR /alf.io
-RUN mkdir /alf.io/logs
+WORKDIR /home/alfio
+RUN mkdir /home/alfio/logs
 ENV ALFIO_LOG_STDOUT_ONLY=true
+ENV ALFIO_JAVA_OPTS=""
 
-VOLUME ["/alf.io/logs"]
+CMD java $ALFIO_JAVA_OPTS -XX:+UseContainerSupport --add-modules jdk.scripting.nashorn -jar /home/alfio/alfio-boot.war
 
-ENTRYPOINT ["java", "-jar", "/alf.io/@APP_NAME@-@APP_VERSION@-boot.war"]
-
-EXPOSE @PORT@
+EXPOSE 8080

@@ -22,11 +22,15 @@ import alfio.manager.system.ConfigurationManager;
 import alfio.model.ContentLanguage;
 import alfio.model.Event;
 import alfio.model.system.Configuration.ConfigurationPathKey;
+import alfio.model.system.ConfigurationKeys;
 import alfio.util.MustacheCustomTagInterceptor;
+import alfio.util.TemplateManager;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.samskivert.mustache.Mustache;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,11 +40,13 @@ import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.support.DefaultMessageSourceResolvable;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.MediaType;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.http.converter.StringHttpMessageConverter;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.session.jdbc.config.annotation.web.http.EnableJdbcHttpSession;
 import org.springframework.ui.ModelMap;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -62,6 +68,7 @@ import javax.servlet.http.HttpServletResponse;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -71,13 +78,17 @@ import static alfio.model.system.ConfigurationKeys.*;
 @Configuration
 @ComponentScan(basePackages = {"alfio.controller", "alfio.config"})
 @EnableWebMvc
-public class MvcConfiguration extends WebMvcConfigurerAdapter {
+@EnableJdbcHttpSession(maxInactiveIntervalInSeconds = 4 * 60 * 60) //4h
+public class MvcConfiguration implements WebMvcConfigurer {
 
     private final MessageSource messageSource;
     private final JMustacheTemplateLoader templateLoader;
     private final I18nManager i18nManager;
     private final ConfigurationManager configurationManager;
     private final Environment environment;
+    private static final Cache<ConfigurationKeys, String> configurationCache = Caffeine.newBuilder()
+        .expireAfterWrite(15, TimeUnit.MINUTES)
+        .build();
 
     @Autowired
     public MvcConfiguration(MessageSource messageSource,
@@ -95,7 +106,7 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
         ResourceHandlerRegistration reg = registry.addResourceHandler("/resources/**").addResourceLocations("/resources/");
-        int cacheMinutes = environment.acceptsProfiles(Initializer.PROFILE_LIVE) ? 15 : 0;
+        int cacheMinutes = environment.acceptsProfiles(Profiles.of(Initializer.PROFILE_LIVE)) ? 15 : 0;
         reg.setCachePeriod(cacheMinutes * 60);
     }
 
@@ -178,9 +189,11 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
                         mv.addObject("request", request);
                         final ModelMap modelMap = mv.getModelMap();
 
-                        boolean demoModeEnabled = environment.acceptsProfiles(Initializer.PROFILE_DEMO);
+                        boolean demoModeEnabled = environment.acceptsProfiles(Profiles.of(Initializer.PROFILE_DEMO));
 
                         modelMap.put("demoModeEnabled", demoModeEnabled);
+                        modelMap.put("devModeEnabled", environment.acceptsProfiles(Profiles.of(Initializer.PROFILE_DEV)));
+                        modelMap.put("prodModeEnabled", environment.acceptsProfiles(Profiles.of(Initializer.PROFILE_LIVE)));
 
                         Optional.ofNullable(request.getAttribute("ALFIO_EVENT_NAME")).map(Object::toString).ifPresent(eventName -> {
 
@@ -203,6 +216,8 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
                             modelMap.putIfAbsent("paypalTestUsername", configurationManager.getStringConfigValue(alfio.model.system.Configuration.getSystemConfiguration(PAYPAL_DEMO_MODE_USERNAME), "<missing>"));
                             modelMap.putIfAbsent("paypalTestPassword", configurationManager.getStringConfigValue(alfio.model.system.Configuration.getSystemConfiguration(PAYPAL_DEMO_MODE_PASSWORD), "<missing>"));
                         }
+
+                        modelMap.putIfAbsent(TemplateManager.VAT_TRANSLATION_TEMPLATE_KEY, TemplateManager.getVATString(event, messageSource, RequestContextUtils.getLocaleResolver(request).resolveLocale(request), configurationManager));
                 });
             }
         };
@@ -220,18 +235,34 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
             @Override
             public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler,
                     ModelAndView modelAndView) throws Exception {
+
+                //
+                String reportUri = "";
+                boolean enabledReport = Boolean.parseBoolean(configurationCache.get(ConfigurationKeys.SECURITY_CSP_REPORT_ENABLED,  (k) ->
+                    configurationManager.getStringConfigValue(
+                        alfio.model.system.Configuration.getSystemConfiguration(k), "false")
+                ));
+                if (enabledReport) {
+                    reportUri = " report-uri " + configurationCache.get(ConfigurationKeys.SECURITY_CSP_REPORT_URI, (k) ->
+                        configurationManager.getStringConfigValue(
+                            alfio.model.system.Configuration.getSystemConfiguration(k), "/report-csp-violation")
+                    );
+                }
+                //
+
+
                 // http://www.html5rocks.com/en/tutorials/security/content-security-policy/
                 // lockdown policy
                 response.addHeader("Content-Security-Policy", "default-src 'none'; "//block all by default
-                        + " script-src 'self' https://js.stripe.com/ https://api.stripe.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
+                        + " script-src 'self' https://checkout.stripe.com/ https://api.stripe.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
                         + " style-src 'self' 'unsafe-inline';" // unsafe-inline for style is acceptable...
                         + " img-src 'self' https: data:;"//
                         + " child-src 'self';"//webworker
-                        + " frame-src 'self' https://js.stripe.com https://www.google.com;"
+                        + " frame-src 'self' https://checkout.stripe.com https://www.google.com;"
                         + " font-src 'self';"//
                         + " media-src blob: 'self';"//for loading camera api
-                        + " connect-src 'self' https://api.stripe.com https://maps.googleapis.com/ https://geocoder.cit.api.here.com;" //<- currently stripe.js use jsonp but if they switch to xmlhttprequest+cors we will be ready
-                        + (environment.acceptsProfiles(Initializer.PROFILE_DEBUG_CSP) ? " report-uri /report-csp-violation" : ""));
+                        + " connect-src 'self' https://checkout.stripe.com https://maps.googleapis.com/ https://geocoder.cit.api.here.com;" //<- currently stripe.js use jsonp but if they switch to xmlhttprequest+cors we will be ready
+                        + reportUri);
             }
         };
     }
@@ -267,7 +298,7 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
         viewResolver.setTemplateFactory(getTemplateFactory());
         viewResolver.setOrder(1);
         //disable caching if we are in dev mode
-        viewResolver.setCache(env.acceptsProfiles(Initializer.PROFILE_LIVE));
+        viewResolver.setCache(env.acceptsProfiles(Profiles.of(Initializer.PROFILE_LIVE)));
         viewResolver.setContentType("text/html;charset=UTF-8");
         return viewResolver;
     }

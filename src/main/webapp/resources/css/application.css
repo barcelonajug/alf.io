@@ -28,10 +28,6 @@ div.col-md-8.col-md-offset-2 > div {
     margin:auto;
 }
 
-div.header {
-    max-height:100px;
-}
-
 div.header img.img-responsive {
     max-height: 100px;
 }
@@ -162,22 +158,6 @@ div.preformatted {
     white-space: pre-wrap;
 }
 
-/* source: https://github.com/twbs/bootstrap/issues/1982#issuecomment-7814657 thank you @ghost! :) */
-.wizard a {padding: 12px 12px 10px 12px; background:#efefef; position:relative; display:inline-block; width:31%}
-.wizard a:before {width:0; height:0; border-top: 20px inset transparent; border-bottom: 20px inset transparent; border-left: 20px solid #fff; position: absolute; content: ""; top: 0; left: 0;}
-.wizard a:after {width:0; height:0; border-top: 20px inset transparent; border-bottom: 20px inset transparent; border-left: 20px solid #efefef; position: absolute; content: ""; top: 0; right: -20px; z-index:2;}
-.wizard a:first-child:before {border:none;}
-.wizard a:last-child:after {border:none;}
-
-.wizard a:first-child {-moz-border-radius: 4px 0 0 4px; -webkit-border-radius: 4px 0 0 4px; border-radius:   4px 0 0 4px;}
-.wizard a:last-child {-moz-border-radius: 0 4px 4px 0; -webkit-border-radius: 0 4px 4px 0; border-radius:   0 4px 4px 0;}
-
-.wizard .badge {margin:0 5px 0 18px; position:relative; top:-1px;}
-.wizard a:first-child .badge {margin-left:0;}
-
-.wizard .current {background:#007ACC; color:#fff;}
-.wizard .current:after {border-left-color:#007ACC;}
-.wizard a:hover { text-decoration: none; } .wizard a:not(.current):hover { color:#08C; }
 .badge-inverse {color:#777; background-color: white}
 
 .wMarginTop30px {
@@ -190,18 +170,76 @@ div.preformatted {
 .alfio-lang a {
 }
 
-html[lang=nl] .alfio-lang a[lang=nl] {
+html[lang=nl] .alfio-lang a[lang=nl],
+html[lang=de] .alfio-lang a[lang=de],
+html[lang=en] .alfio-lang a[lang=en],
+html[lang=it] .alfio-lang a[lang=it],
+html[lang=fr] .alfio-lang a[lang=fr],
+html[lang=ro] .alfio-lang a[lang=ro],
+html[lang=pt] .alfio-lang a[lang=pt] {
     font-weight:bold;
 }
 
-html[lang=de] .alfio-lang a[lang=de] {
-    font-weight:bold;
+.form-horizontal .control-label.category-name {
+    text-align:left;
 }
 
-html[lang=en] .alfio-lang a[lang=en] {
-    font-weight:bold;
+.checkbox-in-form-group {
+    margin-top:30px;
 }
 
-html[lang=it] .alfio-lang a[lang=it] {
+.checkbox-in-form-group label {
+    padding-left:20px;
+    font-weight:normal;
+}
+
+.show-event.g-recaptcha, .overview.g-recaptcha {
+    text-align:center;
+}
+.show-event.g-recaptcha > div, .overview.g-recaptcha > div {
+    display:inline-block;
+}
+
+/* based on https://material-ui.com/demos/steppers/ */
+.wizard2 {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    margin: 4rem 0;
+}
+
+.wizard2 > div {
+    flex: 1;
+    position:relative
+}
+
+.wizard2 > div > div:first-child {
+    flex-direction: column;
+    display: flex;
+    align-items: center;
+}
+
+.wizard2 .wizard2-line {
+    top: 9px;
+    left: calc(50% + 20px);
+    right: calc(-50% + 20px);
+    position: absolute;
+    border-top:1px solid #bdbdbd
+}
+
+.wizard2 .badge {
+    margin-bottom: 1rem;
+}
+
+.badge-success {
+    background-color: #449d44;
+}
+
+.wizard2 .wizard2-current .badge {
+    background-color: #007ACC;
+}
+
+.wizard2 .wizard2-current span:nth-child(2) {
     font-weight:bold;
+    color: black;
 }

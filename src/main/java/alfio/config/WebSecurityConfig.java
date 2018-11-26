@@ -21,20 +21,31 @@ import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.user.Role;
 import alfio.model.user.User;
+import alfio.repository.user.AuthorityRepository;
+import alfio.repository.user.UserRepository;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.authentication.AccountStatusException;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
 import org.springframework.security.config.annotation.web.configurers.CsrfConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.authentication.preauth.AbstractPreAuthenticatedProcessingFilter;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
 import org.springframework.security.web.csrf.HttpSessionCsrfTokenRepository;
 import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
@@ -48,8 +59,13 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.sql.DataSource;
 import java.io.IOException;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.util.Collection;
+import java.util.Locale;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import static alfio.model.system.Configuration.getSystemConfiguration;
 import static alfio.model.system.ConfigurationKeys.ENABLE_CAPTCHA_FOR_LOGIN;
@@ -58,63 +74,136 @@ import static alfio.model.system.ConfigurationKeys.ENABLE_CAPTCHA_FOR_LOGIN;
 @EnableWebSecurity
 public class WebSecurityConfig {
 
-    static final String ADMIN_API = "/admin/api";
-    static final String CSRF_SESSION_ATTRIBUTE = "CSRF_SESSION_ATTRIBUTE";
+    private static final String ADMIN_API = "/admin/api";
+    private static final String ADMIN_PUBLIC_API = "/api/v1/admin";
+    private static final String CSRF_SESSION_ATTRIBUTE = "CSRF_SESSION_ATTRIBUTE";
     public static final String CSRF_PARAM_NAME = "_csrf";
     public static final String OPERATOR = "OPERATOR";
     private static final String SUPERVISOR = "SUPERVISOR";
     public static final String SPONSOR = "SPONSOR";
     private static final String ADMIN = "ADMIN";
     private static final String OWNER = "OWNER";
-    static final String X_REQUESTED_WITH = "X-Requested-With";
+    private static final String API_CLIENT = "API_CLIENT";
+    private static final String X_REQUESTED_WITH = "X-Requested-With";
 
-
-    private static class BaseWebSecurity extends  WebSecurityConfigurerAdapter {
-
-        @Autowired
-        private DataSource dataSource;
-        @Autowired
-        private PasswordEncoder passwordEncoder;
+    private static class APIKeyAuthFilter extends AbstractPreAuthenticatedProcessingFilter {
 
         @Override
-        public void configure(AuthenticationManagerBuilder auth) throws Exception {
-            auth.jdbcAuthentication().dataSource(dataSource)
-                    .usersByUsernameQuery("select username, password, enabled from ba_user where username = ?")
-                    .authoritiesByUsernameQuery("select username, role from authority where username = ?")
-                    .passwordEncoder(passwordEncoder);
+        protected Object getPreAuthenticatedPrincipal(HttpServletRequest request) {
+            return isTokenAuthentication(request) ? StringUtils.trim(request.getHeader("Authorization").substring("apikey ".length())) : null;
+        }
+
+        @Override
+        protected Object getPreAuthenticatedCredentials(HttpServletRequest request) {
+            return "N/A";
         }
     }
 
-    /**
-     * Basic auth configuration for Mobile App.
-     * The rules are only valid if the header Authorization is present, otherwise it fallback to the
-     * FormBasedWebSecurity rules.
-     */
-    @Configuration
-    @Order(1)
-    public static class BasicAuthWebSecurity extends BaseWebSecurity {
 
+    public static class APITokenAuthentication extends AbstractAuthenticationToken {
+
+        private Object credentials;
+        private final Object principal;
+
+
+        public APITokenAuthentication(Object principal, Object credentials, Collection<? extends GrantedAuthority> authorities) {
+            super(authorities);
+            this.credentials = credentials;
+            this.principal = principal;
+            setAuthenticated(true);
+        }
+
+        @Override
+        public Object getCredentials() {
+            return credentials;
+        }
+
+        @Override
+        public Object getPrincipal() {
+            return principal;
+        }
+    }
+
+    public static class WrongAccountTypeException extends AccountStatusException {
+
+        public WrongAccountTypeException(String msg) {
+            super(msg);
+        }
+    }
+
+    @Bean
+    public CsrfTokenRepository getCsrfTokenRepository() {
+        HttpSessionCsrfTokenRepository repository = new HttpSessionCsrfTokenRepository();
+        repository.setSessionAttributeName(CSRF_SESSION_ATTRIBUTE);
+        repository.setParameterName(CSRF_PARAM_NAME);
+        return repository;
+    }
+
+    @Configuration
+    @Order(0)
+    public static class APITokenAuthWebSecurity extends WebSecurityConfigurerAdapter {
+
+        @Autowired
+        private UserRepository userRepository;
+
+        @Autowired
+        private AuthorityRepository authorityRepository;
+
+        //https://stackoverflow.com/a/48448901
         @Override
         protected void configure(HttpSecurity http) throws Exception {
-            http.requestMatcher((request) -> request.getHeader("Authorization") != null).sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            .and().csrf().disable()
-            .authorizeRequests()
-            .antMatchers(ADMIN_API + "/check-in/**").hasAnyRole(OPERATOR, SUPERVISOR)
-            .antMatchers(HttpMethod.GET, ADMIN_API + "/events").hasAnyRole(OPERATOR, SUPERVISOR, SPONSOR)
-            .antMatchers(ADMIN_API + "/user-type").hasAnyRole(OPERATOR, SUPERVISOR, SPONSOR)
-            .antMatchers(ADMIN_API + "/**").denyAll()
-            .antMatchers(HttpMethod.POST, "/api/attendees/sponsor-scan").hasRole(SPONSOR)
-            .antMatchers("/**").authenticated()
-            .and().httpBasic();
+
+            APIKeyAuthFilter filter = new APIKeyAuthFilter();
+            filter.setAuthenticationManager(authentication -> {
+                //
+                String apiKey = (String) authentication.getPrincipal();
+                //check if user type ->
+                User user = userRepository.findByUsername(apiKey).orElseThrow(() -> new BadCredentialsException("Api key " + apiKey + " don't exists"));
+                if (!user.isEnabled()) {
+                    throw new DisabledException("Api key " + apiKey + " is disabled");
+                }
+                if (User.Type.API_KEY != user.getType()) {
+                    throw new WrongAccountTypeException("Wrong account type for username " + apiKey);
+                }
+                if (!user.isCurrentlyValid(ZonedDateTime.now(ZoneId.of("UTC")))) {
+                    throw new DisabledException("Api key " + apiKey + " is expired");
+                }
+
+                return new APITokenAuthentication(
+                    authentication.getPrincipal(),
+                    authentication.getCredentials(),
+                    authorityRepository.findRoles(apiKey).stream().map(SimpleGrantedAuthority::new).collect(Collectors.toList()));
+            });
+
+
+            http.requestMatcher(WebSecurityConfig::isTokenAuthentication)
+                .sessionManagement().sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                .and().csrf().disable()
+                .authorizeRequests()
+                .antMatchers(ADMIN_PUBLIC_API + "/**").hasRole(API_CLIENT)
+                .antMatchers(ADMIN_API + "/check-in/**").hasAnyRole(OPERATOR, SUPERVISOR)
+                .antMatchers(HttpMethod.GET, ADMIN_API + "/events").hasAnyRole(OPERATOR, SUPERVISOR, SPONSOR)
+                .antMatchers(HttpMethod.GET, ADMIN_API + "/user-type", ADMIN_API + "/user/details").hasAnyRole(OPERATOR, SUPERVISOR, SPONSOR)
+                .antMatchers(ADMIN_API + "/**").denyAll()
+                .antMatchers(HttpMethod.POST, "/api/attendees/sponsor-scan").hasRole(SPONSOR)
+                .antMatchers(HttpMethod.GET, "/api/attendees/*/ticket/*").hasAnyRole(OPERATOR, SUPERVISOR)
+                .antMatchers("/**").authenticated()
+                .and().addFilter(filter);
         }
     }
+
+    private static boolean isTokenAuthentication(HttpServletRequest request) {
+        String authorization = request.getHeader("Authorization");
+        return authorization != null && authorization.toLowerCase(Locale.ENGLISH).startsWith("apikey ");
+    }
+
 
     /**
      * Default form based configuration.
      */
     @Configuration
-    @Order(2)
-    public static class FormBasedWebSecurity extends BaseWebSecurity {
+    @Order(1)
+    public static class FormBasedWebSecurity extends WebSecurityConfigurerAdapter {
 
         @Autowired
         private Environment environment;
@@ -124,21 +213,31 @@ public class WebSecurityConfig {
 
         @Autowired
         private RecaptchaService recaptchaService;
+
         @Autowired
         private ConfigurationManager configurationManager;
 
-        @Bean
-        public CsrfTokenRepository getCsrfTokenRepository() {
-            HttpSessionCsrfTokenRepository repository = new HttpSessionCsrfTokenRepository();
-            repository.setSessionAttributeName(CSRF_SESSION_ATTRIBUTE);
-            repository.setParameterName(CSRF_PARAM_NAME);
-            return repository;
+        @Autowired
+        private CsrfTokenRepository csrfTokenRepository;
+
+        @Autowired
+        private DataSource dataSource;
+
+        @Autowired
+        private PasswordEncoder passwordEncoder;
+
+        @Override
+        public void configure(AuthenticationManagerBuilder auth) throws Exception {
+            auth.jdbcAuthentication().dataSource(dataSource)
+                .usersByUsernameQuery("select username, password, enabled from ba_user where username = ?")
+                .authoritiesByUsernameQuery("select username, role from authority where username = ?")
+                .passwordEncoder(passwordEncoder);
         }
 
         @Override
         protected void configure(HttpSecurity http) throws Exception {
 
-            if(environment.acceptsProfiles("!"+Initializer.PROFILE_DEV)) {
+            if(environment.acceptsProfiles(Profiles.of("!"+Initializer.PROFILE_DEV))) {
                 http.requiresChannel().antMatchers("/healthz").requiresInsecure()
                     .and()
                     .requiresChannel().mvcMatchers("/**").requiresSecure();
@@ -165,9 +264,7 @@ public class WebSecurityConfig {
 
             Pattern pattern = Pattern.compile("^(GET|HEAD|TRACE|OPTIONS)$");
             Predicate<HttpServletRequest> csrfWhitelistPredicate = r -> r.getRequestURI().startsWith("/api/webhook/") || pattern.matcher(r.getMethod()).matches();
-            if(environment.acceptsProfiles(Initializer.PROFILE_DEBUG_CSP)) {
-                csrfWhitelistPredicate = csrfWhitelistPredicate.or(r -> r.getRequestURI().equals("/report-csp-violation"));
-            }
+            csrfWhitelistPredicate = csrfWhitelistPredicate.or(r -> r.getRequestURI().equals("/report-csp-violation"));
             configurer.requireCsrfProtectionMatcher(new NegatedRequestMatcher(csrfWhitelistPredicate::test));
 
             String[] ownershipRequired = new String[] {
@@ -179,18 +276,16 @@ public class WebSecurityConfig {
                 ADMIN_API + "/events/*/promo-code",
                 ADMIN_API + "/reservation/event/*/reservations/list",
                 ADMIN_API + "/events/*/email/",
-                ADMIN_API + "/events/*/plugin/log",
                 ADMIN_API + "/event/*/waiting-queue/load",
                 ADMIN_API + "/events/*/pending-payments",
-                ADMIN_API + "/events/*/export.csv",
-                ADMIN_API + "/events/*/sponsor-scan/export.csv",
-                ADMIN_API + "/events/*/sponsor-scan/export.csv",
+                ADMIN_API + "/events/*/export",
+                ADMIN_API + "/events/*/sponsor-scan/export",
                 ADMIN_API + "/events/*/invoices/**",
                 ADMIN_API + "/reservation/event/*/*/audit"
 
             };
 
-            configurer.csrfTokenRepository(getCsrfTokenRepository())
+            configurer.csrfTokenRepository(csrfTokenRepository)
                 .and()
                 .authorizeRequests()
                 .antMatchers(ADMIN_API + "/configuration/**", ADMIN_API + "/users/**").hasAnyRole(ADMIN, OWNER)
@@ -217,7 +312,7 @@ public class WebSecurityConfig {
 
             http.addFilterBefore(new RecaptchaLoginFilter(recaptchaService, "/authenticate", "/authentication?recaptchaFailed", configurationManager), UsernamePasswordAuthenticationFilter.class);
 
-            if(environment.acceptsProfiles(Initializer.PROFILE_DEMO)) {
+            if(environment.acceptsProfiles(Profiles.of(Initializer.PROFILE_DEMO))) {
                 http.addFilterAfter(new UserCreatorBeforeLoginFilter(userManager, "/authenticate"), RecaptchaLoginFilter.class);
             }
         }
@@ -278,7 +373,7 @@ public class WebSecurityConfig {
                     String username = req.getParameter("username");
                     if(!userManager.usernameExists(username)) {
                         int orgId = userManager.createOrganization(username, "Demo organization", username);
-                        userManager.insertUser(orgId, username, "", "", username, Role.OWNER, User.Type.DEMO, req.getParameter("password"));
+                        userManager.insertUser(orgId, username, "", "", username, Role.OWNER, User.Type.DEMO, req.getParameter("password"), null, null);
                     }
                 }
 
@@ -286,10 +381,4 @@ public class WebSecurityConfig {
             }
         }
     }
-
-
-
-
-
-
 }

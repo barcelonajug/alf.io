@@ -23,7 +23,6 @@ import alfio.manager.EventManager;
 import alfio.manager.FileUploadManager;
 import alfio.manager.NotificationManager;
 import alfio.manager.TicketReservationManager;
-import alfio.manager.support.PartialTicketPDFGenerator;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.Event;
 import alfio.model.Ticket;
@@ -33,15 +32,15 @@ import alfio.model.system.Configuration;
 import alfio.model.transaction.PaymentProxy;
 import alfio.model.user.Organization;
 import alfio.repository.TicketCategoryRepository;
+import alfio.repository.TicketFieldRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.util.ImageUtil;
 import alfio.util.LocaleUtil;
 import alfio.util.TemplateManager;
 import com.google.zxing.WriterException;
-import com.openhtmltopdf.pdfboxout.PdfBoxRenderer;
+import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.*;
@@ -56,6 +55,7 @@ import java.util.Optional;
 import static alfio.model.system.ConfigurationKeys.ALLOW_FREE_TICKETS_CANCELLATION;
 
 @Controller
+@RequiredArgsConstructor
 public class TicketController {
 
     private final OrganizationRepository organizationRepository;
@@ -67,27 +67,7 @@ public class TicketController {
     private final ConfigurationManager configurationManager;
     private final FileUploadManager fileUploadManager;
     private final TicketHelper ticketHelper;
-
-    @Autowired
-    public TicketController(OrganizationRepository organizationRepository,
-                            TicketReservationManager ticketReservationManager,
-                            TicketCategoryRepository ticketCategoryRepository,
-                            TemplateManager templateManager,
-                            NotificationManager notificationManager,
-                            EventManager eventManager,
-                            ConfigurationManager configurationManager,
-                            FileUploadManager fileUploadManager,
-                            TicketHelper ticketHelper) {
-        this.organizationRepository = organizationRepository;
-        this.ticketReservationManager = ticketReservationManager;
-        this.ticketCategoryRepository = ticketCategoryRepository;
-        this.templateManager = templateManager;
-        this.notificationManager = notificationManager;
-        this.eventManager = eventManager;
-        this.configurationManager = configurationManager;
-        this.fileUploadManager = fileUploadManager;
-        this.ticketHelper = ticketHelper;
-    }
+    private final TicketFieldRepository ticketFieldRepository;
 
     @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/{ticketIdentifier}", method = RequestMethod.GET)
     public String showTicketOLD(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId,
@@ -139,7 +119,7 @@ public class TicketController {
 
         boolean enableFreeCancellation = configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ticketCategory.getId(), ALLOW_FREE_TICKETS_CANCELLATION), false);
         Ticket ticket = data.getRight();
-        model.addAttribute("ticketAndCategory", Pair.of(eventManager.getTicketCategoryById(ticket.getCategoryId(), event.getId()), new TicketDecorator(ticket, enableFreeCancellation, eventManager.checkTicketCancellationPrerequisites().apply(ticket), "ticket/"+ticket.getUuid()+"/view", ticketHelper.findTicketFieldConfigurationAndValue(event.getId(), ticket, locale), true, "")))//
+        model.addAttribute("ticketAndCategory", Pair.of(eventManager.getTicketCategoryById(ticket.getCategoryId(), event.getId()), new TicketDecorator(ticket, enableFreeCancellation, eventManager.checkTicketCancellationPrerequisites().apply(ticket), "ticket/"+ticket.getUuid()+"/view", ticketHelper.findTicketFieldConfigurationAndValue(ticket), true, "")))//
                 .addAttribute("reservation", data.getMiddle())//
                 .addAttribute("reservationId", ticketReservationManager.getShortReservationID(event, data.getMiddle().getId()))
                 .addAttribute("event", event)//
@@ -193,14 +173,19 @@ public class TicketController {
         Triple<Event, TicketReservation, Ticket> data = oData.get();
         
         Ticket ticket = data.getRight();
-        
+        Event event = data.getLeft();
+        TicketReservation ticketReservation = data.getMiddle();
+
         response.setContentType("application/pdf");
         response.addHeader("Content-Disposition", "attachment; filename=ticket-" + ticketIdentifier + ".pdf");
         try (OutputStream os = response.getOutputStream()) {
-            PdfBoxRenderer renderer = preparePdfTicket(request, data.getLeft(), data.getMiddle(), ticket).generate(ticket);
-            if(renderer != null) {
-                renderer.createPDF(os);
-            }
+            TicketCategory ticketCategory = ticketCategoryRepository.getByIdAndActive(ticket.getCategoryId(), event.getId());
+            Organization organization = organizationRepository.getById(event.getOrganizationId());
+            String reservationID = ticketReservationManager.getShortReservationID(event, ticketReservation.getId());
+            TemplateProcessor.renderPDFTicket(LocaleUtil.getTicketLanguage(ticket, request), event, ticketReservation,
+                ticket, ticketCategory, organization,
+                templateManager, fileUploadManager,
+                reservationID, os, ticketHelper.buildRetrieveFieldValuesFunction());
         }
     }
     
@@ -232,14 +217,6 @@ public class TicketController {
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
         oData.ifPresent(triple -> ticketReservationManager.releaseTicket(triple.getLeft(), triple.getMiddle(), triple.getRight()));
         return "redirect:/event/" + eventName;
-    }
-
-    private PartialTicketPDFGenerator preparePdfTicket(HttpServletRequest request, Event event, TicketReservation ticketReservation, Ticket ticket) throws WriterException, IOException {
-        TicketCategory ticketCategory = ticketCategoryRepository.getByIdAndActive(ticket.getCategoryId(), event.getId());
-        Organization organization = organizationRepository.getById(event.getOrganizationId());
-        String reservationID = ticketReservationManager.getShortReservationID(event, ticketReservation.getId());
-        return TemplateProcessor.buildPartialPDFTicket(LocaleUtil.getTicketLanguage(ticket, request), event, ticketReservation,
-            ticketCategory, organization, templateManager, fileUploadManager, reservationID);
     }
 
     private String internalShowTicket(String eventName, String ticketIdentifier, boolean ticketEmailSent, Model model, String backSuffix, Locale locale) {

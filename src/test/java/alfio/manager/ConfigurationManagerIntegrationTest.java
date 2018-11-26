@@ -19,7 +19,6 @@ package alfio.manager;
 import alfio.TestConfiguration;
 import alfio.config.DataSourceConfiguration;
 import alfio.config.Initializer;
-import alfio.config.RepositoryConfiguration;
 import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.Event;
@@ -38,10 +37,9 @@ import alfio.model.user.User;
 import alfio.repository.TicketCategoryRepository;
 import alfio.repository.system.ConfigurationRepository;
 import alfio.repository.user.OrganizationRepository;
-import alfio.test.util.IntegrationTestUtil;
+import alfio.util.BaseIntegrationTest;
 import alfio.util.OptionalWrapper;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -61,17 +59,12 @@ import static alfio.model.system.ConfigurationKeys.*;
 import static org.junit.Assert.*;
 
 @RunWith(SpringJUnit4ClassRunner.class)
-@ContextConfiguration(classes = {RepositoryConfiguration.class, DataSourceConfiguration.class, TestConfiguration.class})
-@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS})
+@ContextConfiguration(classes = {DataSourceConfiguration.class, TestConfiguration.class})
+@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS, Initializer.PROFILE_INTEGRATION_TEST})
 @Transactional
-public class ConfigurationManagerIntegrationTest {
+public class ConfigurationManagerIntegrationTest extends BaseIntegrationTest {
 
     public static final String USERNAME = "test";
-
-    @BeforeClass
-    public static void initEnv() {
-        IntegrationTestUtil.initSystemProperties();
-    }
 
     Event event;
     TicketCategory ticketCategory;
@@ -113,7 +106,7 @@ public class ConfigurationManagerIntegrationTest {
                 new DateTimeModification(LocalDate.now(), LocalTime.now()),
                 Collections.singletonMap("en", "desc"), BigDecimal.TEN, false, "", false, null, null,
                 null, null, null));
-        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", null, null,
+        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", null, null, null,
             "eventShortName", "displayName", organization.getId(),
             "muh location", "0.0", "0.0", ZoneId.systemDefault().getId(), desc,
             new DateTimeModification(LocalDate.now(), LocalTime.now()),
@@ -265,12 +258,10 @@ public class ConfigurationManagerIntegrationTest {
     @Test
     public void testLoadOrganizationConfiguration() {
         Map<ConfigurationKeys.SettingCategory, List<Configuration>> orgConf = configurationManager.loadOrganizationConfig(event.getOrganizationId(), USERNAME);
-        assertEquals(8, orgConf.size());
         assertEquals(ConfigurationKeys.byPathLevel(ConfigurationPathLevel.ORGANIZATION).size(), orgConf.values().stream().flatMap(Collection::stream).count());
         String value = "MY-ACCOUNT_NUMBER";
         configurationRepository.insertOrganizationLevel(event.getOrganizationId(), ConfigurationKeys.BANK_ACCOUNT_NR.getValue(), value, "empty");
         orgConf = configurationManager.loadOrganizationConfig(event.getOrganizationId(), USERNAME);
-        assertEquals(8, orgConf.size());
         assertEquals(ConfigurationKeys.byPathLevel(ConfigurationPathLevel.ORGANIZATION).size(), orgConf.values().stream().flatMap(Collection::stream).count());
         assertEquals(value, orgConf.get(SettingCategory.PAYMENT_OFFLINE).stream().filter(c -> c.getConfigurationKey() == ConfigurationKeys.BANK_ACCOUNT_NR).findFirst().orElseThrow(IllegalStateException::new).getValue());
     }

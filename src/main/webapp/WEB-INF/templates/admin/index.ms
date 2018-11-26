@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-ng-app="adminApplication" data-ng-csp {{#basicConfigurationNeeded}}data-basic-configuration-needed{{/basicConfigurationNeeded}}>
+<html lang="en" data-ng-app="adminApplication" data-ng-csp {{#basicConfigurationNeeded}}data-basic-configuration-needed{{/basicConfigurationNeeded}} {{#devModeEnabled}}dev-mode-enabled{{/devModeEnabled}} {{#prodModeEnabled}}prod-mode-enabled{{/prodModeEnabled}}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -43,7 +43,6 @@
     <script src="{{request.contextPath}}/resources/js/admin/service/resource-service.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/service/organization.service.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/service/user.service.js"></script>
-    <script src="{{request.contextPath}}/resources/js/admin/feature/plugin/plugin-log.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/email/email-log.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/util/file-upload.js"></script>
 
@@ -66,6 +65,7 @@
 
     <script src="{{request.contextPath}}/resources/js/admin/feature/users/users.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/user-edit/user-edit.js"></script>
+    <script src="{{request.contextPath}}/resources/js/admin/feature/apikey-bulk-import/apikey-bulk-import.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/user-edit-current/user-edit-current.js"></script>
 
     <script src="{{request.contextPath}}/resources/js/admin/feature/organizations/organizations.js"></script>
@@ -87,6 +87,8 @@
     <script src="{{request.contextPath}}/resources/js/admin/feature/extension/extension.service.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/extension/add-update/extension-add-update.js"></script>
     <script src="{{request.contextPath}}/resources/js/admin/feature/extension/log/extension-log.js"></script>
+    <script src="{{request.contextPath}}/resources/js/admin/feature/ticket-category/ticket-category.js"></script>
+    <script src="{{request.contextPath}}/resources/js/admin/feature/group/groups.js"></script>
 
     <link rel="stylesheet" href="{{request.contextPath}}/resources/js/admin/feature/reservation/create/reservation-create.css" />
 
@@ -95,6 +97,7 @@
     <script type="text/javascript" src="{{request.contextPath}}/resources/bower_components/angular-ui-ace/ui-ace.js"></script>
     <script type="text/javascript" src="{{request.contextPath}}/resources/bower_components/dexie/dist/dexie.min.js"></script>
     <script type="text/javascript" src="{{request.contextPath}}/resources/bower_components/papaparse/papaparse.min.js"></script>
+    <script type="text/javascript" src="{{request.contextPath}}/resources/bower_components/checklist-model/checklist-model.js"></script>
     <title>{{#i18n}}admin.title{{/i18n}}</title>
 </head>
 <body>
@@ -118,8 +121,10 @@
                                 {{#isOwner}}
                                 <li data-ui-sref-active="active"><a data-ui-sref="organizations" ng-click="ctrl.menuCollapsed = true">Organizations</a></li>
                                 <li data-ui-sref-active="active"><a data-ui-sref="users" ng-click="ctrl.menuCollapsed = true">Users</a></li>
+                                <li data-ui-sref-active="active"><a data-ui-sref="apikey" ng-click="ctrl.menuCollapsed = true">Api Keys</a></li>
+                                <li data-ui-sref-active="active"><a data-ui-sref="groups" ui-sref-opts="{reload: true, notify: true}" ng-click="ctrl.menuCollapsed = true">Groups</a></li>
                                 <li data-ui-sref-active="active"><a data-ui-sref="configuration.system" ng-click="ctrl.menuCollapsed = true">Configuration</a></li>
-                                <li data-ui-sref-active="active"><a data-ui-sref="extension.list" ng-click="ctrl.menuCollapsed = true">Extension</a></li>
+                                {{#isAdmin}}<li data-ui-sref-active="active"><a data-ui-sref="extension.list" ng-click="ctrl.menuCollapsed = true">Extension</a></li>{{/isAdmin}}
                                 {{/isOwner}}
                             </ul>
                             <ul class="nav navbar-nav visible-sm visible-xs" ng-if="ctrl.eventName">
@@ -128,7 +133,7 @@
                                 <li data-ui-sref-active="active"><a data-ui-sref="events.single.configuration({eventName: ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-wrench"></i> edit configuration</a></li>
                                 <li data-ui-sref-active="active"><a data-ui-sref="events.single.show-resources({eventName: ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-file-text-o" aria-hidden="true"></i> customize templates</a></li>
                                 <li data-ui-sref-active="active"><a data-ui-sref="events.single.compose-custom-message({eventName: ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-envelope"></i> compose message</a></li>
-                                <li data-ui-sref-active="active" data-ng-if="!ctrl.event.expired"><a data-ui-sref="events.single.checkIn({eventName: ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-check"></i> Check-in</a></li>
+                                <li data-ui-sref-active="active" {{^isOwner}}data-ng-if="!ctrl.event.expired"{{/isOwner}}><a data-ui-sref="events.single.checkIn({eventName: ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-check"></i> Check-in</a></li>
                             </ul>
                             <ul class="nav navbar-nav visible-sm visible-xs" ng-if="ctrl.eventName">
                                 <li class="navbar-header"><h4>Status</h4></li>
@@ -155,9 +160,6 @@
                                 </li>
                                 <li role="presentation" data-ui-sref-active="active">
                                     <a data-ui-sref="events.single.email-log({eventName:ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-paper-plane-o"></i> E-mail log</a>
-                                </li>
-                                <li role="presentation" data-ui-sref-active="active">
-                                    <a data-ui-sref="events.single.plugin-log({eventName:ctrl.eventName})" ng-click="ctrl.menuCollapsed = true"><i class="fa fa-plug"></i> Plugins log</a>
                                 </li>
                             </ul>
                             <ul class="nav navbar-nav visible-sm visible-xs">
@@ -205,5 +207,6 @@
             </footer>
         </div>
     </div>
+    <script src="{{request.contextPath}}/resources/js/common/warning-msg.js" async="true"></script>
 </body>
 </html>

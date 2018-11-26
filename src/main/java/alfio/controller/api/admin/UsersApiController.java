@@ -17,51 +17,61 @@
 package alfio.controller.api.admin;
 
 import alfio.config.WebSecurityConfig;
+import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.modification.OrganizationModification;
 import alfio.model.modification.UserModification;
 import alfio.model.result.ValidationResult;
+import alfio.model.system.Configuration;
+import alfio.model.system.ConfigurationKeys;
 import alfio.model.user.*;
 import alfio.util.ImageUtil;
 import alfio.util.Json;
+import alfio.util.OptionalWrapper;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
 import lombok.Getter;
 import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.security.Principal;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
+import static org.apache.commons.lang3.StringUtils.defaultString;
+import static org.apache.commons.lang3.StringUtils.trimToNull;
 import static org.springframework.web.bind.annotation.RequestMethod.*;
 
 @RestController
 @RequestMapping("/admin/api")
 @Log4j2
+@AllArgsConstructor
 public class UsersApiController {
 
     private static final String OK = "OK";
     private final UserManager userManager;
-
-
-    @Autowired
-    public UsersApiController(UserManager userManager) {
-        this.userManager = userManager;
-    }
+    private final ConfigurationManager configurationManager;
 
     @ExceptionHandler(Exception.class)
     @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     @ResponseBody
     public String unhandledException(Exception e) {
         log.error("unhandled exception", e);
-        return e.getMessage();
+        return e != null ? e.getMessage() : "Unexpected error";
     }
 
     @RequestMapping(value = "/roles", method = GET)
@@ -86,6 +96,21 @@ public class UsersApiController {
             .orElse(WebSecurityConfig.OPERATOR);
     }
 
+    @GetMapping("/user/details")
+    public Map<String, String> retrieveDetails(Principal principal) {
+        User user = userManager.findUserByUsername(principal.getName());
+        Map<String, String> result = new HashMap<>();
+        boolean isApiKey = user.getType() == User.Type.API_KEY;
+        result.put(isApiKey ? "apiKey" : "username", user.getUsername());
+        if(!isApiKey) {
+            result.put("firstName", user.getFirstName());
+            result.put("lastName", user.getLastName());
+        }
+        result.put("description", user.getDescription());
+        result.put("userType", getLoggedUserType());
+        return result;
+    }
+
     @RequestMapping(value = "/organizations", method = GET)
     @ResponseStatus(HttpStatus.OK)
     public List<Organization> getAllOrganizations(Principal principal) {
@@ -102,6 +127,16 @@ public class UsersApiController {
         return userManager.findAllUsers(principal.getName());
     }
 
+    @PostMapping(value = "/api-keys/bulk")
+    public ResponseEntity<String> bulkCreate(@RequestBody BulkApiKeyCreation request, Principal principal) {
+        Optional<User> userOptional = OptionalWrapper.optionally(() -> userManager.findUserByUsername(principal.getName()))
+            .filter(u -> userManager.isOwnerOfOrganization(u, request.organizationId));
+        if(userOptional.isPresent()) {
+            userManager.bulkInsertApiKeys(request.organizationId, request.role, request.descriptions);
+            return ResponseEntity.ok("OK");
+        }
+        return ResponseEntity.badRequest().build();
+    }
 
     @RequestMapping(value = "/organizations/new", method = POST)
     public String insertOrganization(@RequestBody OrganizationModification om) {
@@ -122,14 +157,21 @@ public class UsersApiController {
 
     @RequestMapping(value = "/users/check", method = POST)
     public ValidationResult validateUser(@RequestBody UserModification userModification) {
-        return userManager.validateUser(userModification.getId(), userModification.getUsername(),
-                userModification.getOrganizationId(), userModification.getRole(), userModification.getFirstName(),
-                userModification.getLastName(), userModification.getEmailAddress());
+        if(userModification.getType() == User.Type.API_KEY) {
+            return ValidationResult.success();
+        } else {
+            return userManager.validateUser(userModification.getId(), userModification.getUsername(),
+                    userModification.getOrganizationId(), userModification.getRole(), userModification.getFirstName(),
+                    userModification.getLastName(), userModification.getEmailAddress());
+        }
     }
 
     @RequestMapping(value = "/users/edit", method = POST)
     public String editUser(@RequestBody UserModification userModification, Principal principal) {
-        userManager.editUser(userModification.getId(), userModification.getOrganizationId(), userModification.getUsername(), userModification.getFirstName(), userModification.getLastName(), userModification.getEmailAddress(), Role.valueOf(userModification.getRole()), principal.getName());
+        userManager.editUser(userModification.getId(), userModification.getOrganizationId(),
+            userModification.getUsername(), userModification.getFirstName(), userModification.getLastName(),
+            userModification.getEmailAddress(), userModification.getDescription(),
+            Role.valueOf(userModification.getRole()), principal.getName());
         return OK;
     }
 
@@ -143,20 +185,50 @@ public class UsersApiController {
     public UserWithPasswordAndQRCode insertUser(@RequestBody UserModification userModification, @RequestParam("baseUrl") String baseUrl, Principal principal) {
         Role requested = Role.valueOf(userModification.getRole());
         Validate.isTrue(userManager.getAvailableRoles(principal.getName()).stream().anyMatch(requested::equals), String.format("Requested role %s is not available for current user", userModification.getRole()));
+        User.Type type = userModification.getType();
         UserWithPassword userWithPassword = userManager.insertUser(userModification.getOrganizationId(), userModification.getUsername(),
             userModification.getFirstName(), userModification.getLastName(),
             userModification.getEmailAddress(), requested,
-            User.Type.INTERNAL);
-        return new UserWithPasswordAndQRCode(userWithPassword, toBase64QRCode(userWithPassword, baseUrl));
+            type == null ? User.Type.INTERNAL : type,
+            userModification.getValidToAsDateTime(), userModification.getDescription());
+        String qrCode = type != User.Type.API_KEY ? Base64.getEncoder().encodeToString(generateQRCode(userWithPassword, baseUrl)) : null;
+        return new UserWithPasswordAndQRCode(userWithPassword, qrCode);
     }
 
+    @GetMapping("/api-keys/organization/{organizationId}/all")
+    public void getAllApiKeys(@PathVariable("organizationId") int organizationId, HttpServletResponse response, Principal principal) throws IOException {
+        String username = principal.getName();
+        if(userManager.isOwnerOfOrganization(username, organizationId)) {
+            response.setContentType("application/zip");
+            response.setHeader("Content-Disposition", "attachment; filename=apiKeys.zip");
 
-    private static String toBase64QRCode(UserWithPassword userWithPassword, String baseUrl) {
+            String baseUrl = configurationManager.getStringConfigValue(Configuration.getSystemConfiguration(ConfigurationKeys.BASE_URL)).orElseThrow(IllegalStateException::new);
+            try(OutputStream os = response.getOutputStream(); ZipOutputStream zipOS = new ZipOutputStream(os)) {
+                for (User user : userManager.findAllApiKeysFor(organizationId)) {
+                    Pair<String, byte[]> result = generateApiKeyQRCode(user, baseUrl);
+                    zipOS.putNextEntry(new ZipEntry(user.getType().name() + "-" +result.getLeft()+".png"));
+                    StreamUtils.copy(result.getRight(), zipOS);
+                }
+            }
+        } else {
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+        }
+    }
+
+    private static Pair<String, byte[]> generateApiKeyQRCode(User user, String baseUrl) {
+        Map<String, String> info = new HashMap<>();
+        info.put("apiKey", user.getUsername());
+        info.put("baseUrl", baseUrl);
+        String description = defaultString(trimToNull(user.getDescription()), user.getUsername());
+        return Pair.of(description, ImageUtil.createQRCodeWithDescription(Json.GSON.toJson(info), description));
+    }
+
+    private static byte[] generateQRCode(UserWithPassword userWithPassword, String baseUrl) {
         Map<String, Object> info = new HashMap<>();
         info.put("username", userWithPassword.getUsername());
         info.put("password", userWithPassword.getPassword());
         info.put("baseUrl", baseUrl);
-        return Base64.getEncoder().encodeToString(ImageUtil.createQRCode(Json.GSON.toJson(info)));
+        return ImageUtil.createQRCode(Json.GSON.toJson(info));
     }
 
     @RequestMapping(value = "/users/{id}", method = DELETE)
@@ -175,20 +247,24 @@ public class UsersApiController {
     public UserModification loadUser(@PathVariable("id") int userId) {
         User user = userManager.findUser(userId);
         List<Organization> userOrganizations = userManager.findUserOrganizations(user.getUsername());
-        return new UserModification(user.getId(), userOrganizations.get(0).getId(), userManager.getUserRole(user).name(), user.getUsername(), user.getFirstName(), user.getLastName(), user.getEmailAddress());
+        return new UserModification(user.getId(), userOrganizations.get(0).getId(), userManager.getUserRole(user).name(),
+            user.getUsername(), user.getFirstName(), user.getLastName(), user.getEmailAddress(),
+            user.getType(), user.getValidToEpochSecond(), user.getDescription());
     }
 
     @RequestMapping(value = "/users/current", method = GET)
     public UserModification loadCurrentUser(Principal principal) {
         User user = userManager.findUserByUsername(principal.getName());
         Optional<Organization> userOrganization = userManager.findUserOrganizations(user.getUsername()).stream().findFirst();
-        return new UserModification(user.getId(), userOrganization.map(Organization::getId).orElse(-1), userManager.getUserRole(user).name(), user.getUsername(), user.getFirstName(), user.getLastName(), user.getEmailAddress());
+        return new UserModification(user.getId(), userOrganization.map(Organization::getId).orElse(-1),
+            userManager.getUserRole(user).name(), user.getUsername(), user.getFirstName(), user.getLastName(),
+            user.getEmailAddress(), user.getType(), user.getValidToEpochSecond(), user.getDescription());
     }
 
     @RequestMapping(value = "/users/{id}/reset-password", method = PUT)
     public UserWithPasswordAndQRCode resetPassword(@PathVariable("id") int userId, @RequestParam("baseUrl") String baseUrl) {
         UserWithPassword userWithPassword = userManager.resetPassword(userId);
-        return new UserWithPasswordAndQRCode(userWithPassword, toBase64QRCode(userWithPassword, baseUrl));
+        return new UserWithPasswordAndQRCode(userWithPassword, Base64.getEncoder().encodeToString(generateQRCode(userWithPassword, baseUrl)));
     }
 
     @Getter
@@ -216,6 +292,8 @@ public class UsersApiController {
         public String getDescription() {
             return role.getDescription();
         }
+
+        public String getTarget() { return role.getTarget().name(); }
     }
 
     private static final class PasswordModification {
@@ -231,6 +309,22 @@ public class UsersApiController {
             this.oldPassword = oldPassword;
             this.newPassword = newPassword;
             this.newPasswordConfirm = newPasswordConfirm;
+        }
+    }
+
+    private static final class BulkApiKeyCreation {
+
+        private final int organizationId;
+        private final Role role;
+        private final List<String> descriptions;
+
+        @JsonCreator
+        private BulkApiKeyCreation(@JsonProperty("organizationId") int organizationId,
+                                   @JsonProperty("role") Role role,
+                                   @JsonProperty("descriptions") List<String> descriptions) {
+            this.organizationId = organizationId;
+            this.role = role;
+            this.descriptions = descriptions;
         }
     }
 }

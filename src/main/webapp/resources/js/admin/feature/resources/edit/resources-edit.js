@@ -4,6 +4,8 @@
     angular.module('adminApplication').component('resourcesEdit', {
         bindings: {
             event:'<',
+            forOrganization: '<',
+            organizationId: '<',
             resourceName: '<'
         },
         controller: ResourcesEditCtrl,
@@ -18,10 +20,15 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
     ctrl.deleteFor = deleteFor;
     ctrl.resetFor = resetFor;
     ctrl.previewFor = previewFor;
+    ctrl.showDeleteButton = showDeleteButton;
 
     ctrl.$onInit = function() {
         loadAll()
     };
+
+    function getOrgId() {
+        return ctrl.forOrganization ? ctrl.organizationId : ctrl.event.organizationId;
+    }
 
     ctrl.initLoadListener = function(locale) {
         var key = locale.locale;
@@ -39,6 +46,7 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
                 }
             });
             editor.setValue(ctrl.resources[key], 0);
+            ctrl.editors[key] = editor;
         }
     };
 
@@ -62,7 +70,7 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
     function previewFor(locale) {
         delete ctrl.error;
         var newText  = ctrl.resources[locale];
-        ResourceService.preview(ctrl.event.organizationId, ctrl.event.id, ctrl.resourceName, locale, {fileAsString: newText}).then(function(res) {
+        ResourceService.preview(getOrgId(), ctrl.forOrganization ? undefined : ctrl.event.id, ctrl.resourceName, locale, {fileAsString: newText}).then(function(res) {
             if(!res.download) {
                 ctrl.previewedText = res.text;
                 ctrl.previewMode = true;
@@ -75,18 +83,31 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
         delete ctrl.error;
         ctrl.previewMode = false;
         var newText  = ctrl.resources[locale];
-        ResourceService.uploadFile(ctrl.event.organizationId, ctrl.event.id, {fileAsString: newText, name: getFileName(locale), type: 'text/plain'}).then(loadAll, errorHandler);
+        var saver;
+        if(ctrl.forOrganization) {
+            saver = ResourceService.uploadOrganizationFile(getOrgId(), {fileAsString: newText, name: getFileName(locale), type: 'text/plain'});
+        } else {
+            saver = ResourceService.uploadFile(ctrl.event.organizationId, ctrl.event.id, {fileAsString: newText, name: getFileName(locale), type: 'text/plain'});
+        }
+        saver.then(loadAll, errorHandler);
     }
 
     function deleteFor(locale) {
         delete ctrl.error;
-        ctrl.previewMode = false
-        ResourceService.deleteFile(ctrl.event.organizationId, ctrl.event.id, getFileName(locale)).then(loadAll, errorHandler);
+        ctrl.previewMode = false;
+        var deleter;
+        if(ctrl.forOrganization) {
+            deleter = ResourceService.deleteOrganizationFile(getOrgId(), getFileName(locale));
+        } else {
+            deleter = ResourceService.deleteFile(ctrl.event.organizationId, ctrl.event.id, getFileName(locale));
+        }
+        deleter.then(loadAll, errorHandler);
     }
 
     function resetFor(locale) {
         ctrl.previewMode = false;
         ctrl.resources[locale] = ctrl.originalResources[locale] || ctrl.templateBodies[locale];
+        ctrl.editors[locale].setValue(ctrl.resources[locale], 0);
     }
 
     function loadAll() {
@@ -94,8 +115,16 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
         ctrl.resources = {};
         ctrl.resourcesMetadata = {};
         ctrl.originalResources = {};
+        ctrl.editors = {};
 
-        EventService.getSelectedLanguages(ctrl.event.shortName).then(function(lang) {
+        var languageLoader;
+        if(ctrl.forOrganization) {
+            languageLoader = EventService.getAllLanguages();
+        } else {
+            languageLoader = EventService.getSelectedLanguages(ctrl.event.shortName);
+        }
+
+        languageLoader.then(function(lang) {
             ctrl.locales = lang.data;
             return lang.data;
         }).then(function(selectedLang) {
@@ -108,9 +137,30 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
                     return res.data;
                 });
 
-                ResourceService.getMetadataForEventResource(ctrl.event.organizationId, ctrl.event.id, getFileName(locale)).then(function(res) {
+                var metadataLoader;
+                if(ctrl.forOrganization) {
+                    metadataLoader = ResourceService.getMetadataForOrganizationResource(getOrgId(), getFileName(locale));
+                } else {
+                    metadataLoader = ResourceService.getMetadataForEventResource(getOrgId(), ctrl.event.id, getFileName(locale))
+                       .then(
+                        function(res) {return res},
+                        function() {return ResourceService.getMetadataForOrganizationResource(getOrgId(), getFileName(locale));}
+                    );
+                }
+
+                metadataLoader.then(function(res) {
                     ctrl.resourcesMetadata[locale] = res.data;
-                    ResourceService.getEventResource(ctrl.event.organizationId, ctrl.event.id, getFileName(locale)).then(function(resource) {
+                    console.log(res.data);
+                    var resourceLoader;
+                    if(ctrl.forOrganization) {
+                        resourceLoader = ResourceService.getOrganizationResource(getOrgId(), getFileName(locale));
+                    } else {
+                        resourceLoader = ResourceService.getEventResource(getOrgId(), ctrl.event.id, getFileName(locale)).then(
+                            function(res) {return res},
+                            function() {return ResourceService.getOrganizationResource(getOrgId(), getFileName(locale));}
+                        );
+                    }
+                    resourceLoader.then(function(resource) {
                         ctrl.resources[locale] = resource.data;
                         ctrl.originalResources[locale] = resource.data;
                     })
@@ -122,6 +172,14 @@ function ResourcesEditCtrl(ResourceService, EventService, $q) {
                 });
             });
         });
+    }
+
+    function showDeleteButton(locale) {
+        if(ctrl.forOrganization) {
+            return ctrl.resourcesMetadata[locale];
+        } else {
+            return ctrl.resourcesMetadata[locale] && ctrl.resourcesMetadata[locale].eventId === ctrl.event.id;
+        }
     }
 
     function getFileName(locale) {

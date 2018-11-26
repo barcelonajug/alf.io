@@ -16,14 +16,12 @@
  */
 package alfio.manager;
 
-import alfio.manager.support.CheckInStatus;
-import alfio.manager.support.DefaultCheckInResult;
-import alfio.manager.support.OnSitePaymentResult;
-import alfio.manager.support.TicketAndCheckInResult;
+import alfio.manager.support.*;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.*;
 import alfio.model.Ticket.TicketStatus;
 import alfio.model.audit.ScanAudit;
+import alfio.model.system.Configuration;
 import alfio.model.transaction.PaymentProxy;
 import alfio.repository.*;
 import alfio.repository.audit.ScanAuditRepository;
@@ -31,7 +29,10 @@ import alfio.repository.user.OrganizationRepository;
 import alfio.repository.user.UserRepository;
 import alfio.util.Json;
 import alfio.util.MonetaryUtil;
+import com.google.gson.reflect.TypeToken;
 import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -59,7 +60,8 @@ import java.util.stream.Collectors;
 
 import static alfio.manager.support.CheckInStatus.*;
 import static alfio.model.system.ConfigurationKeys.*;
-import static alfio.util.OptionalWrapper.optionally;
+import static java.util.stream.Collectors.toMap;
+import static org.apache.commons.lang3.StringUtils.trimToEmpty;
 
 @Component
 @Transactional
@@ -78,6 +80,8 @@ public class CheckInManager {
     private final OrganizationRepository organizationRepository;
     private final UserRepository userRepository;
     private final TicketReservationManager ticketReservationManager;
+    private final ExtensionManager extensionManager;
+    private final AdditionalServiceItemRepository additionalServiceItemRepository;
 
 
     private void checkIn(String uuid) {
@@ -85,6 +89,7 @@ public class CheckInManager {
         Validate.isTrue(ticket.getStatus() == TicketStatus.ACQUIRED);
         ticketRepository.updateTicketStatusWithUUID(uuid, TicketStatus.CHECKED_IN.toString());
         ticketRepository.toggleTicketLocking(ticket.getId(), ticket.getCategoryId(), true);
+        extensionManager.handleTicketCheckedIn(ticketRepository.findByUUID(uuid));
     }
 
     private void acquire(String uuid) {
@@ -94,10 +99,11 @@ public class CheckInManager {
         ticketReservationManager.registerAlfioTransaction(eventRepository.findById(ticket.getEventId()), ticket.getTicketsReservationId(), PaymentProxy.ON_SITE);
     }
 
-    public TicketAndCheckInResult confirmOnSitePayment(String eventName, String ticketIdentifier, Optional<String> ticketCode, String user) {
+    public TicketAndCheckInResult confirmOnSitePayment(String eventName, String ticketIdentifier, Optional<String> ticketCode, String username, String auditUser) {
         return eventRepository.findOptionalByShortName(eventName)
+            .filter(EventManager.checkOwnership(username, organizationRepository))
             .flatMap(e -> confirmOnSitePayment(ticketIdentifier).map((String s) -> Pair.of(s, e)))
-            .map(p -> checkIn(p.getRight().getId(), ticketIdentifier, ticketCode, user))
+            .map(p -> checkIn(p.getRight().getId(), ticketIdentifier, ticketCode, auditUser))
             .orElseGet(() -> new TicketAndCheckInResult(null, new DefaultCheckInResult(CheckInStatus.TICKET_NOT_FOUND, "")));
     }
 
@@ -110,8 +116,22 @@ public class CheckInManager {
         return uuid;
     }
 
-    public TicketAndCheckInResult checkIn(String shortName, String ticketIdentifier, Optional<String> ticketCode, String user) {
-        return eventRepository.findOptionalByShortName(shortName).map(e -> checkIn(e.getId(), ticketIdentifier, ticketCode, user)).orElseGet(() -> new TicketAndCheckInResult(null, new DefaultCheckInResult(CheckInStatus.EVENT_NOT_FOUND, "event not found")));
+    public TicketAndCheckInResult checkIn(String eventShortName, String ticketIdentifier, Optional<String> ticketCode, String username, String auditUser,
+                                          boolean automaticallyConfirmOnSitePayment) {
+        return eventRepository.findOptionalByShortName(eventShortName)
+            .filter(EventManager.checkOwnership(username, organizationRepository))
+            .map(e -> {
+                if (automaticallyConfirmOnSitePayment && CheckInStatus.MUST_PAY == evaluateTicketStatus(eventShortName, ticketIdentifier, ticketCode).getResult().getStatus()) {
+                    log.info("in event {} automaticallyConfirmOnSitePayment for {}", eventShortName, ticketIdentifier);
+                    confirmOnSitePayment(eventShortName, ticketIdentifier, ticketCode, username, auditUser);
+                }
+                return checkIn(e.getId(), ticketIdentifier, ticketCode, auditUser);
+            })
+            .orElseGet(() -> new TicketAndCheckInResult(null, new DefaultCheckInResult(CheckInStatus.EVENT_NOT_FOUND, "event not found")));
+    }
+
+    public TicketAndCheckInResult checkIn(String shortName, String ticketIdentifier, Optional<String> ticketCode, String username, String auditUser) {
+        return checkIn(shortName, ticketIdentifier, ticketCode, username, auditUser, false);
     }
 
     public TicketAndCheckInResult checkIn(int eventId, String ticketIdentifier, Optional<String> ticketCode, String user) {
@@ -148,6 +168,7 @@ public class CheckInManager {
                 ticketRepository.updateTicketStatusWithUUID(ticketIdentifier, revertedStatus.toString());
                 scanAuditRepository.insert(ticketIdentifier, eventId, ZonedDateTime.now(), user, OK_READY_TO_BE_CHECKED_IN, ScanAudit.Operation.REVERT);
                 auditingRepository.insert(t.getTicketsReservationId(), userRepository.findIdByUserName(user).orElse(null), eventId, Audit.EventType.REVERT_CHECK_IN, new Date(), Audit.EntityType.TICKET, Integer.toString(t.getId()));
+                extensionManager.handleTicketRevertCheckedIn(ticketRepository.findByUUID(ticketIdentifier));
                 return true;
             }
             return false;
@@ -192,6 +213,10 @@ public class CheckInManager {
         Event event = maybeEvent.get();
         String code = ticketCode.get();
 
+        if(ticket.getCategoryId() == null) {
+            return new TicketAndCheckInResult(new TicketWithCategory(ticket, null), new DefaultCheckInResult(INVALID_TICKET_STATE, "Invalid ticket state"));
+        }
+
         TicketCategory tc = ticketCategoryRepository.getById(ticket.getCategoryId());
 
         ZonedDateTime now = ZonedDateTime.now(event.getZoneId());
@@ -200,13 +225,10 @@ public class CheckInManager {
             String from = tc.getValidCheckInFrom() == null ? ".." : formatter.format(tc.getValidCheckInFrom(event.getZoneId()));
             String to = tc.getValidCheckInTo() == null ? ".." : formatter.format(tc.getValidCheckInTo(event.getZoneId()));
             String formattedNow = formatter.format(now);
-            return new TicketAndCheckInResult(ticket, new DefaultCheckInResult(INVALID_TICKET_CATEGORY_CHECK_IN_DATE,
+            return new TicketAndCheckInResult(new TicketWithCategory(ticket, tc), new DefaultCheckInResult(INVALID_TICKET_CATEGORY_CHECK_IN_DATE,
                 String.format("Invalid check-in date: valid range for category %s is from %s to %s, current time is: %s",
                     tc.getName(), from, to, formattedNow)));
         }
-
-        log.trace("scanned code is {}", code);
-        log.trace("true code    is {}", ticket.ticketCode(event.getPrivateKey()));
 
         if (!code.equals(ticket.ticketCode(event.getPrivateKey()))) {
             return new TicketAndCheckInResult(null, new DefaultCheckInResult(INVALID_TICKET_CODE, "Ticket qr code does not match"));
@@ -215,18 +237,18 @@ public class CheckInManager {
         final TicketStatus ticketStatus = ticket.getStatus();
 
         if (ticketStatus == TicketStatus.TO_BE_PAID) {
-            return new TicketAndCheckInResult(ticket, new OnSitePaymentResult(MUST_PAY, "Must pay for ticket", MonetaryUtil.centsToUnit(ticket.getFinalPriceCts()), event.getCurrency()));
+            return new TicketAndCheckInResult(new TicketWithCategory(ticket, tc), new OnSitePaymentResult(MUST_PAY, "Must pay for ticket", MonetaryUtil.centsToUnit(ticket.getFinalPriceCts()), event.getCurrency()));
         }
 
         if (ticketStatus == TicketStatus.CHECKED_IN) {
-            return new TicketAndCheckInResult(ticket, new DefaultCheckInResult(ALREADY_CHECK_IN, "Error: already checked in"));
+            return new TicketAndCheckInResult(new TicketWithCategory(ticket, tc), new DefaultCheckInResult(ALREADY_CHECK_IN, "Error: already checked in"));
         }
 
         if (ticket.getStatus() != TicketStatus.ACQUIRED) {
-            return new TicketAndCheckInResult(ticket, new DefaultCheckInResult(INVALID_TICKET_STATE, "Invalid ticket state, expected ACQUIRED state, received " + ticket.getStatus()));
+            return new TicketAndCheckInResult(new TicketWithCategory(ticket, tc), new DefaultCheckInResult(INVALID_TICKET_STATE, "Invalid ticket state, expected ACQUIRED state, received " + ticket.getStatus()));
         }
 
-        return new TicketAndCheckInResult(ticket, new DefaultCheckInResult(OK_READY_TO_BE_CHECKED_IN, "Ready to be checked in"));
+        return new TicketAndCheckInResult(new TicketWithCategory(ticket, tc), new DefaultCheckInResult(OK_READY_TO_BE_CHECKED_IN, "Ready to be checked in"));
     }
 
     private static Pair<Cipher, SecretKeySpec>  getCypher(String key) {
@@ -261,9 +283,9 @@ public class CheckInManager {
         try {
             Pair<Cipher, SecretKeySpec> cipherAndSecret = getCypher(key);
             Cipher cipher = cipherAndSecret.getKey();
-            String[] splitted = payload.split(Pattern.quote("|"));
-            byte[] iv = Base64.decodeBase64(splitted[0]);
-            byte[] body = Base64.decodeBase64(splitted[1]);
+            String[] split = payload.split(Pattern.quote("|"));
+            byte[] iv = Base64.decodeBase64(split[0]);
+            byte[] body = Base64.decodeBase64(split[1]);
             cipher.init(Cipher.DECRYPT_MODE, cipherAndSecret.getRight(), new IvParameterSpec(iv));
             byte[] decrypted = cipher.doFinal(body);
             return new String(decrypted, StandardCharsets.UTF_8);
@@ -281,14 +303,14 @@ public class CheckInManager {
     }
 
     public List<Integer> getAttendeesIdentifiers(int eventId, Date changedSince, String username) {
-        return optionally(() -> eventRepository.findById(eventId))
+        return eventRepository.findOptionalById(eventId)
             .filter(EventManager.checkOwnership(username, organizationRepository))
             .map(event -> ticketRepository.findAllAssignedByEventId(event.getId(), changedSince))
             .orElse(Collections.emptyList());
     }
 
     public List<FullTicketInfo> getAttendeesInformation(int eventId, List<Integer> ids, String username) {
-        return optionally(() -> eventRepository.findById(eventId))
+        return eventRepository.findOptionalById(eventId)
             .filter(EventManager.checkOwnership(username, organizationRepository))
             .map(event -> ticketRepository.findAllFullTicketInfoAssignedByEventId(event.getId(), ids))
             .orElse(Collections.emptyList());
@@ -321,8 +343,27 @@ public class CheckInManager {
                 info.put("uuid", ticket.getUuid());
                 info.put("category", ticket.getTicketCategory().getName());
                 if (!additionalFields.isEmpty()) {
-                    Map<String, String> map = ticketFieldRepository.findValueForTicketId(ticket.getId(), additionalFields).stream().collect(Collectors.toMap(TicketFieldValue::getName, TicketFieldValue::getValue));
-                    info.put("additionalInfoJson", Json.toJson(map));
+                    Map<String, String> fields = new HashMap<>();
+                    fields.put("company", trimToEmpty(ticket.getBillingDetails().getCompanyName()));
+                    fields.putAll(ticketFieldRepository.findValueForTicketId(ticket.getId(), additionalFields).stream()
+                        .map(vd -> {
+                            try {
+                                if(StringUtils.isNotBlank(vd.getDescription())) {
+                                    Map<String, Object> description = Json.GSON.fromJson(vd.getDescription(), new TypeToken<Map<String, Object>>(){}.getType());
+                                    Object rv = description.get("restrictedValues");
+                                    if(rv instanceof Map) {
+                                        @SuppressWarnings("unchecked")
+                                        Map<String, String> restrictedValues = (Map<String, String>) rv;
+                                        return Pair.of(vd.getName(), restrictedValues.getOrDefault(vd.getValue(), vd.getValue()));
+                                    }
+                                }
+                            } catch (Exception e) {
+                                log.error("cannot deserialize restricted values", e);
+                            }
+                            return Pair.of(vd.getName(), vd.getValue());
+                        })
+                        .collect(toMap(Pair::getLeft, Pair::getRight)));
+                    info.put("additionalInfoJson", Json.toJson(fields));
                 }
 
                 //
@@ -334,13 +375,46 @@ public class CheckInManager {
                     info.put("validCheckInTo", Long.toString(tc.getValidCheckInTo(event.getZoneId()).toEpochSecond()));
                 }
                 //
+
+                List<BookedAdditionalService> additionalServices = additionalServiceItemRepository.getAdditionalServicesBookedForReservation(ticket.getTicketsReservationId(), ticket.getUserLanguage(), ticket.getEventId());
+                boolean additionalServicesEmpty = additionalServices.isEmpty();
+                if(!additionalServicesEmpty) {
+                    List<Integer> additionalServiceIds = additionalServices.stream().map(BookedAdditionalService::getAdditionalServiceId).collect(Collectors.toList());
+                    Map<Integer, List<TicketFieldValueForAdditionalService>> fields = ticketFieldRepository.loadTicketFieldsForAdditionalService(ticket.getId(), additionalServiceIds)
+                        .stream().collect(Collectors.groupingBy(TicketFieldValueForAdditionalService::getAdditionalServiceId));
+
+                    List<AdditionalServiceInfo> additionalServicesInfo = additionalServices.stream()
+                        .map(as -> new AdditionalServiceInfo(as.getAdditionalServiceName(), as.getCount(), fields.get(as.getAdditionalServiceId())))
+                        .collect(Collectors.toList());
+                    info.put("additionalServicesInfoJson", Json.toJson(additionalServicesInfo));
+                }
                 String key = ticket.ticketCode(eventKey);
                 return encrypt(key, Json.toJson(info));
             };
             return ticketRepository.findAllFullTicketInfoAssignedByEventId(event.getId(), ids)
                 .stream()
-                .collect(Collectors.toMap(hashedHMAC, encryptedBody));
+                .collect(toMap(hashedHMAC, encryptedBody));
 
         }).orElseGet(Collections::emptyMap);
+    }
+
+    public CheckInStatistics getStatistics(String eventName, String username) {
+        return eventRepository.findOptionalByShortName(eventName)
+            .filter(this::areStatsEnabled)
+            .filter(EventManager.checkOwnership(username, organizationRepository))
+            .map(event -> eventRepository.retrieveCheckInStatisticsForEvent(event.getId()))
+            .orElse(null);
+    }
+
+    private boolean areStatsEnabled(Event event) {
+        return configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), CHECK_IN_STATS), true);
+    }
+
+    @Getter
+    @RequiredArgsConstructor
+    private static class AdditionalServiceInfo {
+        private final String name;
+        private final int count;
+        private final List<TicketFieldValueForAdditionalService> fields;
     }
 }

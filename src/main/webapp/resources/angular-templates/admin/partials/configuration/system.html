@@ -32,6 +32,16 @@
         </div>
 
         <div class="page-header">
+            <h2>Reservation Process</h2>
+            <span>Customizations for the public-facing reservation process</span>
+        </div>
+        <div>
+            <div data-ng-repeat="setting in systemConf.reservationUi.settings">
+                <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+            </div>
+        </div>
+
+        <div class="page-header">
             <h2>E-Mail</h2>
             <span>E-Mail settings</span>
         </div>
@@ -125,7 +135,6 @@
                 <div class="panel-title"><i class="fa fa-eur"></i> EU-Specific invoice settings</div>
             </div>
             <div class="panel-body">
-                <div class="alert alert-info"><i class="fa fa-info-circle"></i> You'll need to build and deploy the <a href="https://github.com/stephanj/ServerlessEUVATChecker" target="_blank">ServerlessEUVATChecker</a> Lambda Function on AWS.</div>
                 <div data-ng-repeat="setting in systemConf.invoiceEu.settings">
                     <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(setting)" list-values="setting.listValues"></setting>
                 </div>
@@ -206,6 +215,24 @@
             </div>
         </div>
 
+
+        <div class="page-header">
+            <h2>Internationalization</h2>
+        </div>
+        <div class="panel panel-default">
+            <div class="panel-heading">
+                <div class="panel-title"><i class="fa fa-language"></i> Translations override</div>
+            </div>
+            <div class="panel-body">
+                <div data-ng-repeat="setting in systemConf.translations.settings">
+                    <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+                </div>
+            </div>
+        </div>
+
+        <div class="page-header" data-ng-if="systemConf.payment || systemConf.paymentPaypal || systemConf.paymentStripe || systemConf.paymentMollie || systemConf.paymentOffline">
+            <h2>Alf.io PI settings</h2>
+        </div>
         <div data-ng-if="systemConf.alfioPi" class="panel panel-default">
             <div class="panel-heading">
                 <div class="panel-title"><i class="fa fa-check"></i> Alf.io-PI integration for offline check-in and label printing</div>
@@ -216,6 +243,22 @@
                 </div>
                 <div data-ng-repeat="setting in systemConf.alfioPiOptions">
                     <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+                </div>
+            </div>
+        </div>
+
+        <div class="page-header" data-ng-if="systemConf.extensionSettings && (systemConf.extensionSettings | keys).length > 0">
+            <h2>Extensions</h2>
+        </div>
+        <div class="panel panel-default" data-ng-repeat="settingId in systemConf.extensionSettings | keys">
+            <div class="panel-heading">
+                <div class="panel-title"><i class="fa fa-plug"></i> {{systemConf.extensionSettings[settingId][0].extensionDisplayName}}</div>
+            </div>
+            <div class="panel-body">
+                <div>
+                    <div data-ng-repeat="setting in systemConf.extensionSettings[settingId]">
+                        <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.deleteExtensionSetting(setting)"></setting>
+                    </div>
                 </div>
             </div>
         </div>

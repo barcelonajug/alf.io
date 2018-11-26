@@ -1,15 +1,49 @@
 (function() {
     'use strict';
 
-    angular.module('adminApplication').component('eventDataToCollect', {
-        controller: ['$uibModal', '$q', 'EventService', 'AdditionalServiceManager', EventDataToCollectCtrl],
-        templateUrl: '../resources/js/admin/feature/event-data-to-collect/event-data-to-collect.html',
-        bindings: {
-            event: '<'
-        }
-    });
+    var FIELD_TYPES = {
+        'input:text': 'Generic Text Input',
+        'input:tel': 'Phone Number',
+        'textarea': 'Multi-line Text',
+        'select': 'List Box',
+        'country': 'Country',
+        'vat:eu': 'EU VAT'
+    };
 
-    var FIELD_TYPES = ['input:text', 'input:tel', 'textarea', 'select', 'country'];
+    angular.module('adminApplication')
+        .component('eventDataToCollect', {
+            controller: ['$uibModal', '$q', 'EventService', 'AdditionalServiceManager', EventDataToCollectCtrl],
+            templateUrl: '../resources/js/admin/feature/event-data-to-collect/event-data-to-collect.html',
+            bindings: {
+                event: '<'
+            }
+        }).component('restrictedValuesStatistics', {
+            controller: ['EventService', RestrictedValuesStatisticsCtrl],
+            templateUrl: '../resources/js/admin/feature/event-data-to-collect/restricted-values-statistics.html',
+            bindings: {
+                field: '<',
+                closeWindow: '&',
+                eventName: '<'
+            }
+        }).component('standardFields', {
+            template: '' +
+                '<div class="panel panel-primary">' +
+                '   <div class="panel-heading">' +
+                '       <div class="panel-title">Standard Fields</div>' +
+                '   </div>' +
+                '   <ul class="list-group">' +
+                '       <li class="list-group-item">First Name</li>' +
+                '       <li class="list-group-item">Last Name</li>' +
+                '       <li class="list-group-item">Email Address</li>' +
+                '   </ul>' +
+                '</div>'
+        }).filter('fieldType', function() {
+            return function(field) {
+                return FIELD_TYPES[field.type] || field.type;
+            }
+        });
+
+
     var ERROR_CODES = { DUPLICATE:'duplicate', MAX_LENGTH:'maxlength', MIN_LENGTH:'minlength'};
 
     function fillExistingTexts(texts) {
@@ -22,7 +56,7 @@
     function errorHandler(error) {
         $log.error(error.data);
         alert(error.data);
-    };
+    }
 
 
     function EventDataToCollectCtrl($uibModal, $q, EventService, AdditionalServiceManager) {
@@ -76,33 +110,59 @@
                 ctrl.event.additionalServices = list;
             });
 
-        }
+        };
 
         ctrl.fieldUp = fieldUp;
         ctrl.fieldDown = fieldDown;
         ctrl.deleteFieldModal = deleteFieldModal;
         ctrl.editField = editField;
         ctrl.additionalServiceDescription = additionalServiceDescription;
+        ctrl.getCategoryDescription = getCategoryDescription;
+        ctrl.openStats = openStats;
 
         function loadAll() {
             return EventService.getAdditionalFields(ctrl.event.shortName).then(function(result) {
                 ctrl.additionalFields = result.data;
+                ctrl.standardFieldsIndex = findStandardFieldsIndex(ctrl.additionalFields);
             });
         }
 
+        function findStandardFieldsIndex(array) {
+            return _.findIndex(array, function(f) {return f.order >= 0;});
+        }
+
+        function getCategoryDescription(categoryId) {
+            var category = _.find(ctrl.event.ticketCategories, function(c) { return c.id === categoryId; });
+            return category ? category.name : categoryId;
+        }
 
         function fieldUp(index) {
             var targetId = ctrl.additionalFields[index].id;
-            var prevTargetId = ctrl.additionalFields[index-1].id;
-            EventService.swapFieldPosition(ctrl.event.shortName, targetId, prevTargetId).then(function() {
+            var targetPosition = ctrl.additionalFields[index].order;
+            var promise = null;
+            if(index > 0) {
+                var prevTargetId = ctrl.additionalFields[index-1].id;
+                promise = EventService.swapFieldPosition(ctrl.event.shortName, targetId, prevTargetId)
+            } else {
+                promise = EventService.moveField(ctrl.event.shortName, targetId, targetPosition - 1);
+            }
+            promise.then(function() {
                 loadAll();
             });
         }
 
         function fieldDown(index) {
-            var targetId = ctrl.additionalFields[index].id;
-            var nextTargetId = ctrl.additionalFields[index+1].id;
-            EventService.swapFieldPosition(ctrl.event.shortName, targetId, nextTargetId).then(function() {
+            var field = ctrl.additionalFields[index];
+            var other = ctrl.additionalFields[index+1];
+            var targetId = field.id;
+            var nextTargetId = other.id;
+            var promise;
+            if(field.order < 0 && other.order >= 0) {
+                promise = EventService.moveField(ctrl.event.shortName, targetId, 0);
+            } else {
+                promise = EventService.swapFieldPosition(ctrl.event.shortName, targetId, nextTargetId);
+            }
+            promise.then(function() {
                 loadAll();
             });
         }
@@ -123,6 +183,21 @@
             });
         }
 
+        function openStats(field) {
+            $uibModal.open({
+                size: 'md',
+                template: '<restricted-values-statistics field="field" close-window="closeFn()" event-name="eventName"></restricted-values-statistics>',
+                controller: function($scope) {
+                    $scope.field = field;
+                    $scope.eventName = ctrl.event.shortName;
+                    $scope.closeFn = function() {
+                        $scope.$close(true);
+                    };
+                },
+                controllerAs: '$ctrl'
+            });
+        }
+
         function editField (event, addNew, field) {
             $uibModal.open({
                 size:'lg',
@@ -132,6 +207,9 @@
                     $scope.event = event;
                     $scope.addNewField = addNew;
                     $scope.field = addNew ? {} : angular.copy(field);
+                    if(!$scope.field.categoryIds) {
+                        $scope.field.categoryIds = [];
+                    }
                     $scope.fieldTypes = FIELD_TYPES;
                     $scope.joinTitle = function(titles) {
                         return titles.map(function(t) { return t.value;}).join(' / ')
@@ -152,6 +230,34 @@
                         $scope.field.maxLength = template.maxLength;
                         $scope.field.minLength = template.minLength;
                         $scope.field.required = template.required;
+                        $scope.field.disabledValues = [];
+                        $scope.field.categoryIds = [];
+                    };
+
+                    $scope.isRestrictedValueEnabled = isRestrictedValueEnabled;
+                    $scope.toggleEnabled = toggleEnabled;
+                    $scope.toggleAllCategoriesSelected = toggleAllCategoriesSelected;
+                    $scope.isCategorySelected = isCategorySelected;
+
+
+                    function isRestrictedValueEnabled(restrictedValue, field) {
+                        return field.disabledValues.indexOf(restrictedValue) === -1;
+                    }
+
+                    function toggleAllCategoriesSelected() {
+                        $scope.field.categoryIds = [];
+                    }
+
+                    function isCategorySelected(category) {
+                        return field.categoryIds.indexOf(category.id) > -1;
+                    }
+
+                    function toggleEnabled(restrictedValue, field) {
+                        if(isRestrictedValueEnabled(restrictedValue, field)) {
+                            field.disabledValues.push(restrictedValue);
+                        } else {
+                            field.disabledValues.splice(field.disabledValues.indexOf(restrictedValue), 1);
+                        }
                     }
 
                     //
@@ -173,7 +279,7 @@
                         var targetObj = $scope.field.restrictedValues[newIdx];
                         $scope.field.restrictedValues[newIdx] = selectedObj;
                         $scope.field.restrictedValues[currentIndex] = targetObj;
-                    }
+                    };
 
                     $scope.addRestrictedValue = function() {
                         var field = $scope.field;
@@ -195,7 +301,7 @@
                         } else {
                             var duplicate = false;
                             angular.forEach(ctrl.additionalFields, function (f) {
-                                if (f.name == field.name) {
+                                if (f.name === field.name) {
                                     form['name'].$setValidity(ERROR_CODES.DUPLICATE, false);
                                     form['name'].$setTouched();
                                     duplicate = true;
@@ -216,13 +322,13 @@
 
         function validationErrorHandler(result, form, fieldsContainer) {
             return $q(function(resolve, reject) {
-                if(result.data['errorCount'] == 0) {
+                if(result.data['errorCount'] === 0) {
                     resolve(result);
                 } else {
                     _.forEach(result.data.validationErrors, function(error) {
                         var field = fieldsContainer[error.fieldName];
                         if(angular.isDefined(field)) {
-                            if (error.code == ERROR_CODES.DUPLICATE) {
+                            if (error.code === ERROR_CODES.DUPLICATE) {
                                 field.$setValidity(ERROR_CODES.DUPLICATE, false);
                                 field.$setTouched();
                             } else {
@@ -243,5 +349,29 @@
             }
             return "#"+id;
         }
+    }
+
+    function RestrictedValuesStatisticsCtrl(EventService) {
+        var ctrl = this;
+
+        function getData() {
+            EventService.getRestrictedValuesStats(ctrl.eventName, ctrl.field.id)
+                .then(function (res) {
+                    ctrl.field.stats = res.data;
+                    ctrl.loading = false;
+                }, function () {
+                    ctrl.loading = false;
+                });
+        }
+
+        ctrl.$onInit = function() {
+            ctrl.loading = true;
+            getData();
+        };
+
+        ctrl.refresh = function() {
+            ctrl.loading = true;
+            getData();
+        };
     }
 })();

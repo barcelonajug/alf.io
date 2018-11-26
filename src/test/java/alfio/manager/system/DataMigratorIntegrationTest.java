@@ -19,35 +19,29 @@ package alfio.manager.system;
 import alfio.TestConfiguration;
 import alfio.config.DataSourceConfiguration;
 import alfio.config.Initializer;
-import alfio.config.RepositoryConfiguration;
 import alfio.controller.form.UpdateTicketOwnerForm;
 import alfio.controller.support.TemplateProcessor;
 import alfio.manager.EventManager;
 import alfio.manager.FileUploadManager;
 import alfio.manager.TicketReservationManager;
-import alfio.manager.support.PartialTicketPDFGenerator;
 import alfio.manager.user.UserManager;
 import alfio.model.*;
 import alfio.model.modification.*;
 import alfio.model.modification.support.LocationDescriptor;
-import alfio.model.plugin.PluginConfigOption;
-import alfio.model.system.ComponentType;
 import alfio.model.system.EventMigration;
-import alfio.model.transaction.PaymentProxy;
 import alfio.model.user.Organization;
 import alfio.model.user.Role;
 import alfio.model.user.User;
 import alfio.repository.EventRepository;
 import alfio.repository.TicketCategoryRepository;
 import alfio.repository.TicketRepository;
-import alfio.repository.plugin.PluginConfigurationRepository;
+import alfio.repository.TicketReservationRepository;
 import alfio.repository.system.EventMigrationRepository;
 import alfio.repository.user.OrganizationRepository;
-import alfio.test.util.IntegrationTestUtil;
+import alfio.util.BaseIntegrationTest;
 import alfio.util.TemplateManager;
 import org.apache.commons.lang3.time.DateUtils;
 import org.apache.commons.lang3.tuple.Pair;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -56,6 +50,8 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -66,12 +62,11 @@ import java.util.*;
 import static org.junit.Assert.*;
 
 @RunWith(SpringJUnit4ClassRunner.class)
-@ContextConfiguration(classes = {RepositoryConfiguration.class, DataSourceConfiguration.class, TestConfiguration.class})
-@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS})
-public class DataMigratorIntegrationTest {
+@ContextConfiguration(classes = {DataSourceConfiguration.class, TestConfiguration.class})
+@ActiveProfiles({Initializer.PROFILE_DEV, Initializer.PROFILE_DISABLE_JOBS, Initializer.PROFILE_INTEGRATION_TEST})
+public class DataMigratorIntegrationTest extends BaseIntegrationTest {
 
-    public static final int AVAILABLE_SEATS = 20;
-
+    private static final int AVAILABLE_SEATS = 20;
     private static final Map<String, String> DESCRIPTION = Collections.singletonMap("en", "desc");
 
     @Autowired
@@ -97,16 +92,11 @@ public class DataMigratorIntegrationTest {
     @Autowired
     private FileUploadManager fileUploadManager;
     @Autowired
-    private PluginConfigurationRepository pluginConfigurationRepository;
+    private TicketReservationRepository ticketReservationRepository;
     @Value("${alfio.version}")
     private String currentVersion;
     @Value("${alfio.build-ts}")
     private String buildTimestamp;
-
-    @BeforeClass
-    public static void initEnv() {
-        IntegrationTestUtil.initSystemProperties();
-    }
 
     private Pair<Event, String> initEvent(List<TicketCategoryModification> categories) {
         return initEvent(categories, "display name");
@@ -126,7 +116,7 @@ public class DataMigratorIntegrationTest {
         desc.put("it", "muh description");
         desc.put("de", "muh description");
 
-        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", null, null,
+        EventModification em = new EventModification(null, Event.EventType.INTERNAL, "url", "url", "url", "privacy", null, null,
                 eventName, displayName, organization.getId(),
                 "muh location",
                 "0.0", "0.0", ZoneId.systemDefault().getId(), desc,
@@ -276,7 +266,7 @@ public class DataMigratorIntegrationTest {
     }
 
     @Test
-    public void testUpdateGender() {
+    public void testUpdateGender() throws IOException {
         List<TicketCategoryModification> categories = Collections.singletonList(
                 new TicketCategoryModification(null, "default", AVAILABLE_SEATS,
                         new DateTimeModification(LocalDate.now(), LocalTime.now()),
@@ -291,7 +281,7 @@ public class DataMigratorIntegrationTest {
 	        TicketReservationWithOptionalCodeModification r = new TicketReservationWithOptionalCodeModification(trm, Optional.empty());
 	        Date expiration = DateUtils.addDays(new Date(), 1);
 	        String reservationId = ticketReservationManager.createTicketReservation(event, Collections.singletonList(r), Collections.emptyList(), expiration, Optional.empty(), Optional.empty(), Locale.ENGLISH, false);
-	        ticketReservationManager.confirm("TOKEN", null, event, reservationId, "email@email.ch", new CustomerName("Full Name", "Full", "Name", event), Locale.ENGLISH, null, new TotalPrice(1000, 10, 0, 0), Optional.empty(), Optional.of(PaymentProxy.ON_SITE), false, null, null, null);
+//	        ticketReservationManager.performPayment("TOKEN", null, event, reservationId, "email@email.ch", new CustomerName("Full Name", "Full", "Name", event), Locale.ENGLISH, null, null, new TotalPrice(1000, 10, 0, 0), Optional.empty(), Optional.of(PaymentProxy.ON_SITE), false, null, null, null, false, false);
 	        List<Ticket> tickets = ticketRepository.findTicketsInReservation(reservationId);
 	        UpdateTicketOwnerForm first = new UpdateTicketOwnerForm();
 	        first.setEmail("email@email.ch");
@@ -304,9 +294,9 @@ public class DataMigratorIntegrationTest {
 	        second.setEmail("email@email.ch");
 	        second.setFirstName("Full");
             second.setLastName("Name");
-	        PartialTicketPDFGenerator generator = TemplateProcessor.buildPartialPDFTicket(Locale.ITALIAN, event, ticketReservationManager.findById(reservationId).get(),
-                ticketCategoryRepository.getByIdAndActive(tickets.get(0).getCategoryId(), event.getId()), organizationRepository.getById(event.getOrganizationId()),
-                templateManager, fileUploadManager, "");
+	        TemplateProcessor.renderPDFTicket(Locale.ITALIAN, event, ticketReservationManager.findById(reservationId).get(),
+                tickets.get(0), ticketCategoryRepository.getByIdAndActive(tickets.get(0).getCategoryId(), event.getId()), organizationRepository.getById(event.getOrganizationId()),
+                templateManager, fileUploadManager, "", new ByteArrayOutputStream(), t -> Collections.emptyList());
 	        ticketReservationManager.updateTicketOwner(tickets.get(0), Locale.ITALIAN, event, first, (t) -> "", (t) -> "", Optional.empty());
 	        ticketReservationManager.updateTicketOwner(tickets.get(1), Locale.ITALIAN, event, second, (t) -> "", (t) -> "", Optional.empty());
 	        //FIXME
@@ -318,31 +308,7 @@ public class DataMigratorIntegrationTest {
     }
 
     @Test
-    public void testUpdatePluginConfiguration() {
-    	List<TicketCategoryModification> categories = Collections.singletonList(new TicketCategoryModification(null,
-				"default", AVAILABLE_SEATS, new DateTimeModification(LocalDate.now(), LocalTime.now()),
-				new DateTimeModification(LocalDate.now(), LocalTime.now()), DESCRIPTION, BigDecimal.TEN, false, "",
-				false, null, null, null, null, null));
-    	Pair<Event, String> eventUsername = initEvent(categories); 
-        Event event = eventUsername.getKey();
-		try {
-			
-			pluginConfigurationRepository.delete("my-plugin");
-			pluginConfigurationRepository.insert("my-plugin", -1, "name", "value", "description", ComponentType.TEXT);
-			dataMigrator.migratePluginConfig(event);
-			List<PluginConfigOption> options = pluginConfigurationRepository.loadByPluginIdAndEventId("my-plugin",
-					event.getId());
-			assertFalse(options.isEmpty());
-			assertEquals(1, options.size());
-			assertEquals(event.getId(), options.get(0).getEventId());
-		} finally {
-			pluginConfigurationRepository.delete("my-plugin");
-			eventManager.deleteEvent(event.getId(), eventUsername.getValue());
-		}
-    }
-
-    @Test
-    public void testFixCategoriesSize() throws Exception {
+    public void testFixCategoriesSize() {
         List<TicketCategoryModification> categories = Arrays.asList(
             new TicketCategoryModification(null, "default", AVAILABLE_SEATS -1,
                 new DateTimeModification(LocalDate.now(), LocalTime.now()),
@@ -362,5 +328,30 @@ public class DataMigratorIntegrationTest {
         assertEquals(1, ticketRepository.countFreeTicketsForUnbounded(event.getId()).intValue());
         assertEquals(AVAILABLE_SEATS - 1, ticketRepository.countFreeTickets(event.getId(), firstCategoryID).intValue());
         assertEquals(AVAILABLE_SEATS - 1, firstCategory.getMaxTickets());
+    }
+
+    @Test
+    public void testFixStuckTickets() {
+        List<TicketCategoryModification> categories = Collections.singletonList(
+            new TicketCategoryModification(null, "default", AVAILABLE_SEATS,
+                new DateTimeModification(LocalDate.now(), LocalTime.now()),
+                new DateTimeModification(LocalDate.now(), LocalTime.now()),
+                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null));
+        Pair<Event, String> eventUsername = initEvent(categories);
+        Event event = eventUsername.getKey();
+        TicketReservationModification trm = new TicketReservationModification();
+        trm.setAmount(1);
+        trm.setTicketCategoryId(eventManager.loadTicketCategories(event).get(0).getId());
+        TicketReservationWithOptionalCodeModification r = new TicketReservationWithOptionalCodeModification(trm, Optional.empty());
+        Date expiration = DateUtils.addDays(new Date(), 1);
+        String reservationId = ticketReservationManager.createTicketReservation(event, Collections.singletonList(r), Collections.emptyList(), expiration, Optional.empty(), Optional.empty(), Locale.ENGLISH, false);
+        //simulate the effect of a reservation cancellation after #392, as described in #391
+        ticketReservationRepository.updateReservationStatus(reservationId, TicketReservation.TicketReservationStatus.CANCELLED.name());
+        List<Ticket> ticketsInReservation = ticketRepository.findTicketsInReservation(reservationId);
+        assertEquals(1, ticketsInReservation.size());
+        String uuid = ticketsInReservation.get(0).getUuid();
+        assertTrue(ticketsInReservation.stream().allMatch(t -> t.getStatus() == Ticket.TicketStatus.PENDING));
+        dataMigrator.fixStuckTickets(event.getId());
+        assertTrue(ticketRepository.findByUUID(uuid).getStatus() == Ticket.TicketStatus.RELEASED);
     }
 }

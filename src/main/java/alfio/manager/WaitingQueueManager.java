@@ -16,7 +16,6 @@
  */
 package alfio.manager;
 
-import alfio.manager.plugin.PluginManager;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.*;
 import alfio.model.modification.TicketReservationModification;
@@ -67,7 +66,6 @@ public class WaitingQueueManager {
     private final TemplateManager templateManager;
     private final MessageSource messageSource;
     private final OrganizationRepository organizationRepository;
-    private final PluginManager pluginManager;
     private final EventRepository eventRepository;
     private final ExtensionManager extensionManager;
 
@@ -82,7 +80,6 @@ public class WaitingQueueManager {
             validateSelectedCategoryId(event.getId(), selectedCategoryId);
             AffectedRowCountAndKey<Integer> key = waitingQueueRepository.insert(event.getId(), customerName.getFullName(), customerName.getFirstName(), customerName.getLastName(), email, ZonedDateTime.now(event.getZoneId()), userLanguage.getLanguage(), subscriptionType, selectedCategoryId);
             notifySubscription(event, customerName, email, userLanguage, subscriptionType);
-            pluginManager.handleWaitingQueueSubscription(waitingQueueRepository.loadById(key.getKey()));
             extensionManager.handleWaitingQueueSubscription(waitingQueueRepository.loadById(key.getKey()));
             return true;
         } catch(DuplicateKeyException e) {
@@ -107,7 +104,7 @@ public class WaitingQueueManager {
                     new Object[] {subscriptionType, event.getDisplayName()}, Locale.ENGLISH);
             notificationManager.sendSimpleEmail(event, organization.getEmail(), messageSource.getMessage("email-waiting-queue.subscribed.admin.subject",
                             new Object[]{event.getDisplayName()}, Locale.ENGLISH),
-                    () -> templateManager.renderString(adminTemplate, model, Locale.ENGLISH, TemplateManager.TemplateOutput.TEXT));
+                    () -> templateManager.renderString(event, adminTemplate, model, Locale.ENGLISH, TemplateManager.TemplateOutput.TEXT));
         }
 
     }
@@ -145,9 +142,10 @@ public class WaitingQueueManager {
 
     Stream<Triple<WaitingQueueSubscription, TicketReservationWithOptionalCodeModification, ZonedDateTime>> distributeSeats(Event event) {
         int eventId = event.getId();
-        List<WaitingQueueSubscription> subscriptions = waitingQueueRepository.loadAllWaiting(eventId);
+        List<WaitingQueueSubscription> subscriptions = waitingQueueRepository.loadAllWaitingForUpdate(eventId);
         int waitingPeople = subscriptions.size();
         int waitingTickets = ticketRepository.countWaiting(eventId);
+
         if (waitingPeople == 0 && waitingTickets > 0) {
             ticketRepository.revertToFree(eventId);
         } else if (waitingPeople > 0 && waitingTickets > 0) {
@@ -163,8 +161,7 @@ public class WaitingQueueManager {
         // Given that this Job runs more than once in a minute, in order to ensure that all the waiting queue subscribers would get a seat *before*
         // all other people, we must process their a little bit before the sale period starts
         Optional<TicketCategory> categoryWithInceptionInFuture = ticketCategories.stream()
-                .sorted(TicketCategory.COMPARATOR)
-                .findFirst()
+                .min(TicketCategory.COMPARATOR)
                 .filter(t -> ZonedDateTime.now(event.getZoneId()).isBefore(t.getInception(event.getZoneId()).minusMinutes(5)));
         int ticketsNeeded = Math.min(waitingPeople, eventRepository.countExistingTickets(event.getId()));
         if(ticketsNeeded > 0) {
@@ -244,9 +241,14 @@ public class WaitingQueueManager {
 
     private Optional<TicketCategory> findBestCategory(List<TicketCategory> unboundedCategories, WaitingQueueSubscription subscription) {
         Integer selectedCategoryId = subscription.getSelectedCategoryId();
-        return unboundedCategories.stream()
+        Optional<TicketCategory> firstMatch = unboundedCategories.stream()
             .filter(tc -> selectedCategoryId == null || selectedCategoryId.equals(tc.getId()))
             .findFirst();
+        if(firstMatch.isPresent()) {
+            return firstMatch;
+        } else {
+            return unboundedCategories.stream().findFirst();
+        }
     }
 
     public void fireReservationConfirmed(String reservationId) {

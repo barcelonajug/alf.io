@@ -19,6 +19,10 @@
         </a>
     </div>
 
+    <div ng-if="event.attendeesList" class="alert alert-info text-center">
+        <span><i class="fa fa-user-secret"></i> Access to this event has been limited to Group <a ui-sref="groups.edit({orgId: event.organizationId, groupId: event.attendeesList.groupId})" target="_blank">{{event.attendeesList.groupName}}</a> <a class="btn btn-sm btn-default" ui-sref="configuration.event({organizationId: event.organizationId, eventId: event.id})" target="_blank"><i class="fa fa-wrench"></i> configure</a></span>
+    </div>
+
     <div data-ng-if="isInternal(event)">
 
         <div class="page-header">
@@ -33,6 +37,15 @@
             <label class="btn btn-sm btn-default" data-ng-model="selection.expired" data-uib-btn-checkbox><i class="fa" data-ng-class="{'fa-check-square-o': selection.expired, 'fa-square-o': !selection.expired}"></i> Expired <span class="badge">{{countExpired(event.ticketCategories)}}</span></label>
             <label><div class="input-group"><div class="input-group-addon"><i class="fa fa-search"></i></div><input type="text" class="form-control input-sm" data-ng-model="selection.freeText" data-ng-change="updateSelectionText(selection.freeText)"></div></label>
         </div>
+        <script type="text/ng-template" id="categoryStats.html">
+            <ul class="list-unstyled">
+                <li ng-if="ticketCategory.checkedInTickets > 0"><span class="text-left">Checked in</span><span class="text-right pull-right" style="margin-left: 10px">{{ticketCategory.checkedInTickets}}</span></li>
+                <li ng-if="ticketCategory.soldTickets > 0"><span class="text-left">Sold</span><span class="text-right pull-right" style="margin-left: 10px">{{ticketCategory.soldTickets}}</span></li>
+                <li ng-if="ticketCategory.pendingTickets > 0"><span class="text-left">Reservation in progress</span><span class="text-right pull-right" style="margin-left: 10px">{{ticketCategory.pendingTickets}}</span></li>
+                <li ng-if="ticketCategory.notSoldTickets > 0"><span class="text-left">Still Available</span><span class="text-right pull-right" style="margin-left: 10px">{{ticketCategory.notSoldTickets}}</span></li>
+                <li ng-if="!ticketCategory.bounded"><span class="text-left">Dynamically allocated</span><span class="text-right pull-right" style="margin-left: 10px">{{event.dynamicAllocation}}</span></li>
+            </ul>
+        </script>
         <div data-ng-switch="(event.ticketCategories | showSelectedCategories : selection).length">
             <div data-ng-switch-when="0" class="alert alert-warning">
                 No categories matching the selected criteria have been found.
@@ -49,11 +62,12 @@
                                     <div class="category-name" data-ng-class="{'category-active': !ticketCategory.expired}"><i class="fa" data-ng-class="{'fa-warning': displayWarning, 'fa-paperclip': !displayWarning}"></i> {{ticketCategory.name}}</div>
                                 </div>
                                 <div class="hidden-xs hidden-sm col-md-4">
-                                    <uib-progress max="getActualCapacity(ticketCategory, event)">
-                                        <uib-bar value="ticketCategory.checkedInTickets" type="success" uib-tooltip="Checked in ({{ticketCategory.checkedInTickets}})"><span>{{ticketCategory.checkedInTickets}}</span></uib-bar>
-                                        <uib-bar value="ticketCategory.soldTickets" type="warning" uib-tooltip="Sold ({{ticketCategory.soldTickets}})"><span>{{ticketCategory.soldTickets}}</span></uib-bar>
-                                        <uib-bar value="ticketCategory.notSoldTickets" type="info" uib-tooltip="Still available ({{ticketCategory.notSoldTickets}})">{{ticketCategory.notSoldTickets}}</uib-bar>
-                                        <uib-bar ng-if="!ticketCategory.bounded" value="event.dynamicAllocation" type="default" uib-tooltip="Dynamically allocated ({{event.dynamicAllocation}})">{{event.dynamicAllocation}}</uib-bar>
+                                    <uib-progress max="getActualCapacity(ticketCategory, event)" uib-tooltip-template="'categoryStats.html'" tooltip-popup-close-delay="500">
+                                        <uib-bar value="ticketCategory.checkedInTickets" type="success"><span>{{ticketCategory.checkedInTickets}}</span></uib-bar>
+                                        <uib-bar value="ticketCategory.soldTickets" type="warning"><span>{{ticketCategory.soldTickets}}</span></uib-bar>
+                                        <uib-bar value="ticketCategory.pendingTickets" type="info" class="slice-pending">{{ticketCategory.pendingTickets}}</uib-bar>
+                                        <uib-bar value="ticketCategory.notSoldTickets" type="info">{{ticketCategory.notSoldTickets}}</uib-bar>
+                                        <uib-bar ng-if="!ticketCategory.bounded" value="event.dynamicAllocation" type="default">{{event.dynamicAllocation}}</uib-bar>
                                     </uib-progress>
                                 </div>
                                 <div class="col-xs-12 col-md-5">
@@ -76,6 +90,9 @@
                         </div>
                     </div>
                     <div class="panel-body">
+                        <div ng-if="ticketCategory.attendeesList" class="alert alert-info text-center">
+                            <span><i class="fa fa-user-secret"></i> Access to this category has been limited to Group <a ui-sref="groups.edit({orgId: event.organizationId, groupId: ticketCategory.attendeesList.groupId})" target="_blank">{{ticketCategory.attendeesList.groupName}}</a> <button type="button" class="btn btn-default btn-sm" ng-click="openConfiguration(event, ticketCategory)"><i class="fa fa-wrench"></i> configure</button></span>
+                        </div>
                         <div class="row form-inline text-danger" data-ng-if="ticketCategory.containingOrphans">
                             <div class="col-xs-12" data-ng-form="moveTickets">
                                 <i class="fa fa-warning"></i> This category contains orphan (not sold) tickets. Move them to another category:
@@ -86,45 +103,13 @@
                         </div>
                         <div class="row text-warning" data-ng-if="ticketCategory.containingStuckTickets">
                             <div class="col-xs-12">
-                                <i class="fa fa-warning"></i> This category contains tickets which have been paid but not yet confirmed. This is usually due to a Database failure after a successful payment. Please fix them.
+                                <i class="fa fa-warning"></i> This category contains tickets whose reservations are in an unknown state. This could happen when we have troubles after receiving a response from the Payment Gateway. Please <a ui-sref="events.single.ticketsList({eventName: event.shortName, categoryId: ticketCategory.id})">fix them</a>.
                             </div>
                         </div>
-                        <dl class="dl-horizontal">
-                            <dt>Max tickets</dt>
-                            <dd ng-switch="ticketCategory.bounded">
-                                <span ng-switch-when="true">{{::ticketCategory.maxTickets}}</span>
-                                <span ng-switch-when="false">dynamic</span>
-                            </dd>
 
-                            <dt>Initial sale date</dt>
-                            <dd>{{::ticketCategory.formattedInception | formatDate}}</dd>
-
-                            <dt>End sale date</dt>
-                            <dd>{{::ticketCategory.formattedExpiration | formatDate}}</dd>
-
-                            <dt data-ng-if="!event.freeOfCharge">Price before tax</dt>
-                            <dd data-ng-if="!event.freeOfCharge">{{::ticketCategory.price | currency : (event.currency || "")}}</dd>
-
-                            <dt data-ng-if="!event.freeOfCharge">Price after tax</dt>
-                            <dd data-ng-if="!event.freeOfCharge">{{::ticketCategory.actualPrice | currency : (event.currency || "")}}</dd>
-
-                            <dt ng-if="ticketCategory.code && ticketCategory.code.length > 0">Diret Access Code</dt>
-                            <dd ng-if="ticketCategory.code && ticketCategory.code.length > 0">{{::ticketCategory.code}}</dd>
-
-                            <dt ng-if="ticketCategory.code && ticketCategory.code.length > 0">Direct Access URL</dt>
-                            <dd ng-if="ticketCategory.code && ticketCategory.code.length > 0">{{::baseUrl}}/event/{{::event.shortName}}/code/{{::ticketCategory.code}}</dd>
-
-                            <dt ng-if="ticketCategory.formattedValidCheckInFrom">Valid check-in from</dt>
-                            <dd ng-if="ticketCategory.formattedValidCheckInFrom">{{::ticketCategory.formattedValidCheckInFrom | formatDate}}</dd>
-
-                            <dt ng-if="ticketCategory.formattedValidCheckInTo">Valid check-in to</dt>
-                            <dd ng-if="ticketCategory.formattedValidCheckInTo">{{::ticketCategory.formattedValidCheckInTo | formatDate}}</dd>
-
-                        </dl>
-                        <div class="row hidden-xs hidden-sm" ng-if="categoryHasDescriptions(ticketCategory)">
-                            <hr />
-                            <div class="col-md-12 hidden-xs hidden-sm"><p class="text-muted" data-ng-repeat="(lang, desc) in ticketCategory.description" title="{{lang}}"><display-commonmark-preview text="desc"></display-commonmark-preview> {{desc}}</p></div>
-                        </div>
+                        <ticket-category-detail data-event="event"
+                                                data-ticket-category="ticketCategory"
+                                                data-panel-mode-enabled="false"></ticket-category-detail>
                         <div data-ng-if="ticketCategory.accessRestricted" class="wMarginBottom" data-uib-collapse="isTokenViewCollapsed(ticketCategory)">
                             <hr>
                             <button class="close" aria-label="Close" data-ng-click="toggleTokenViewCollapse(ticketCategory)"><i class="fa fa-close"></i></button>

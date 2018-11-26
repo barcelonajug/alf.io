@@ -23,6 +23,16 @@
                 </div>
             </div>
 
+            <div class="page-header">
+                <h2>Reservation Process</h2>
+                <span>Customizations for the public-facing reservation process</span>
+            </div>
+            <div>
+                <div data-ng-repeat="setting in eventConf.reservationUi.settings">
+                    <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="eventConf.delete(config)"></setting>
+                </div>
+            </div>
+
             <div class="page-header" data-ng-if="eventConf.mail">
                 <h2>E-Mail</h2>
                 <span>E-Mail settings <span class="label label-info">system</span></span>
@@ -99,6 +109,82 @@
                 </div>
             </div>
 
+            <div data-ng-if="eventConf.paymentOffline" class="panel panel-default">
+                <div class="panel-heading">
+                    <div class="panel-title"><i class="fa fa-exchange"></i> Offline payment configuration</div>
+                </div>
+                <div class="panel-body">
+                    <div class="alert alert-info">
+                        <p><i class="fa fa-info-circle"></i> In order to be able to accept offline payments, you must fill your <strong>Bank Account</strong> data.</p>
+                    </div>
+                    <div data-ng-repeat="setting in eventConf.paymentOffline.settings">
+                        <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="eventConf.delete(config)"  ></setting>
+                    </div>
+                </div>
+            </div>
+
+            <div ng-if="eventConf.groups.length > 0">
+                <div class="page-header" data-ng-if="eventConf.groups.length > 0">
+                    <h2>Link to Group</h2>
+                    <span>Allow only selected people to assign/buy a ticket for this event</span>
+                </div>
+                <div class="row">
+                    <div class="col-xs-12 col-md-6">
+                        <div class="row">
+                            <div class="col-xs-12">
+                                <div class="list-group">
+                                    <a class="list-group-item" ng-repeat="group in eventConf.groups" ng-class="{'active': eventConf.group.groupId == group.id}" ng-click="eventConf.selectGroup(group)">
+                                        <h4 class="list-group-item-heading"><i class="fa fa-check" ng-if="eventConf.group.groupId == group.id"></i> {{group.name}}</h4>
+                                        <p class="list-group-item-text" ng-bind="group.description"></p>
+                                    </a>
+                                </div>
+                            </div>
+                            <div class="col-xs-12" ng-if="eventConf.group">
+                                <button type="button" class="btn btn-danger" ng-click="eventConf.removeGroupLink(eventConf.organizationId, eventConf.group)"><i class="fa fa-trash"></i> Deactivate</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-xs-12 col-md-6">
+                        <div class="row" ng-if="eventConf.group">
+                            <div class="col-xs-12">
+                                <div class="form-group">
+                                    <label for="matchType">Match Type</label>
+                                    <select class="form-control" id="matchType" ng-options="key as value for (key , value) in eventConf.groupMatchTypes" ng-model="eventConf.group.matchType"></select>
+                                </div>
+                            </div>
+                            <div class="col-xs-12">
+                                <div class="form-group">
+                                    <label for="selectStrategy">Ticket Allocation Strategy</label>
+                                    <select class="form-control" id="selectStrategy" ng-options="key as value for (key , value) in eventConf.groupTypes" ng-model="eventConf.group.type"></select>
+                                </div>
+                            </div>
+                            <div class="col-xs-12" ng-if="eventConf.group.type == 'LIMITED_QUANTITY'">
+                                <div class="form-group">
+                                    <label for="maxAllocation">Max tickets</label>
+                                    <input type="number" pattern="\d+" required class="form-control" id="maxAllocation" ng-model="eventConf.group.maxAllocation"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+
+            <div class="page-header">
+                <h2>Internationalization</h2>
+            </div>
+            <div class="panel panel-default">
+                <div class="panel-heading">
+                    <div class="panel-title"><i class="fa fa-language"></i> Translations override</div>
+                </div>
+                <div class="panel-body">
+                    <div data-ng-repeat="setting in eventConf.translations.settings">
+                        <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="eventConf.delete(config)"></setting>
+                    </div>
+                </div>
+            </div>
+
             <div class="page-header" data-ng-if="eventConf.alfioPi">
                 <h2>Integrations</h2>
             </div>
@@ -127,6 +213,22 @@
                     <div class="page-header"><h3 data-ng-bind="key"></h3></div>
                     <div data-ng-repeat="setting in settings">
                         <setting data-obj="setting" data-display-delete-if-needed="true" data-organization="eventConf.organization" display-system-badge="true"></setting>
+                    </div>
+                </div>
+            </div>
+
+            <div class="page-header" data-ng-if="eventConf.extensionSettings && (eventConf.extensionSettings | keys).length > 0">
+                <h2>Extensions</h2>
+            </div>
+            <div class="panel panel-default" data-ng-repeat="settingId in eventConf.extensionSettings | keys">
+                <div class="panel-heading">
+                    <div class="panel-title"><i class="fa fa-plug"></i> {{eventConf.extensionSettings[settingId][0].extensionDisplayName}}</div>
+                </div>
+                <div class="panel-body">
+                    <div>
+                        <div data-ng-repeat="setting in eventConf.extensionSettings[settingId]">
+                            <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="eventConf.deleteExtensionSetting(setting)"></setting>
+                        </div>
                     </div>
                 </div>
             </div>
