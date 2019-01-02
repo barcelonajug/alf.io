@@ -1,6 +1,6 @@
 function submitPageView() {
     if(window.ga) {
-        ga('create', '{{account}}', auto', {'allowLinker': true, 'anonymizeIp': true, 'storage': 'none', 'clientId': '{{clientId}}'});
+        ga('create', '{{account}}', 'auto', {'allowLinker': true, 'anonymizeIp': true, 'storage': 'none', 'clientId': '{{clientId}}'});
         ga('require', 'linker');
         ga('linker:autoLink', ['www.jbcnconf.com'] );
         ga('send', 'pageview');
