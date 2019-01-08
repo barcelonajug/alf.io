@@ -1,11 +1,16 @@
-function submitPageView() {
-    if(window.ga) {
-        ga('create', '{{account}}', 'auto', {'allowLinker': true, 'anonymizeIp': true, 'storage': 'none', 'clientId': '{{clientId}}'});
-        ga('require', 'linker');
-        ga('linker:autoLink', ['www.jbcnconf.com'] );
-        ga('send', 'pageview');
-    } else {
-        window.setTimeout(submitPageView, 50);
-    }
-};
-window.setTimeout(submitPageView, 50);
+    (function (i, s, o, g, r, a, m) {
+        i['GoogleAnalyticsObject'] = r;
+        i[r] = i[r] || function () {
+            (i[r].q = i[r].q || []).push(arguments)
+        }, i[r].l = 1 * new Date();
+        a = s.createElement(o),
+                m = s.getElementsByTagName(o)[0];
+        a.async = 1;
+        a.src = g;
+        m.parentNode.insertBefore(a, m)
+    })(window, document, 'script', 'https://www.google-analytics.com/analytics.js', 'ga');
+
+    ga('create', '{{account}}', 'auto', {'allowLinker': true});
+    ga('require', 'linker');
+    ga('linker:autoLink', ['www.jbcnconf.com']);
+    ga('send', 'pageview');
