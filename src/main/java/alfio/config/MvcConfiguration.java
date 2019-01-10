@@ -228,7 +228,7 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
                 // http://www.html5rocks.com/en/tutorials/security/content-security-policy/
                 // lockdown policy
                 response.addHeader("Content-Security-Policy", "default-src 'none'; "//block all by default
-                        + " script-src 'self' https://js.stripe.com/ https://api.stripe.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
+                        + " script-src 'self' https://js.stripe.com/ https://api.stripe.com/ https://www.google-analytics.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
                         + " style-src 'self' 'unsafe-inline';" // unsafe-inline for style is acceptable...
                         + " img-src 'self' https: data:;"//
                         + " child-src 'self';"//webworker
@@ -240,7 +240,7 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
             }
         };
     }
-    
+
 
     @Bean
     public HandlerInterceptor getCsrfInterceptor() {
@@ -309,7 +309,7 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
                             }
                         })
                 .withLoader(templateLoader));
-        
+
         templateFactory.afterPropertiesSet();
         return templateFactory;
     }
@@ -337,5 +337,5 @@ public class MvcConfiguration extends WebMvcConfigurerAdapter {
     }
 
 
-    
+
 }
