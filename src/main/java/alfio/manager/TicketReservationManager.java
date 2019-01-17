@@ -379,28 +379,13 @@ public class TicketReservationManager {
         try {
             PaymentResult paymentResult;
             ticketReservationRepository.lockReservationForUpdate(reservationId);
+            //save billing data in case we have to go back to PENDING
+            ticketReservationRepository.updateBillingData(vatStatus, vatNr, vatCountryCode, invoiceRequested, reservationId);
             if(isDiscountCodeUsageExceeded(reservationId)) {
                 return PaymentResult.unsuccessful(ErrorsCode.STEP_2_DISCOUNT_CODE_USAGE_EXCEEDED);
             }
-            if(reservationCost.getPriceWithVAT() > 0) {
-                if(invoiceRequested && configurationManager.hasAllConfigurationsForInvoice(event)) {
-                    int invoiceSequence = invoiceSequencesRepository.lockReservationForUpdate(event.getOrganizationId());
-                    invoiceSequencesRepository.incrementSequenceFor(event.getOrganizationId());
-                    String pattern = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.INVOICE_NUMBER_PATTERN), "%d");
-                    ticketReservationRepository.setInvoiceNumber(reservationId, String.format(pattern, invoiceSequence));
-                }
-                ticketReservationRepository.updateBillingData(vatStatus, vatNr, vatCountryCode, invoiceRequested, reservationId);
-
-                //
-                extensionManager.handleInvoiceGeneration(event, reservationId,
-                    email, customerName, userLanguage, billingAddress, customerReference,
-                    reservationCost, invoiceRequested, vatCountryCode, vatNr, vatStatus).ifPresent(invoiceGeneration -> {
-                    if (invoiceGeneration.getInvoiceNumber() != null) {
-                        ticketReservationRepository.setInvoiceNumber(reservationId, invoiceGeneration.getInvoiceNumber());
-                    }
-                });
-
-                //
+            boolean toBePaid = reservationCost.getPriceWithVAT() > 0;
+            if(toBePaid) {
                 switch(paymentProxy) {
                     case STRIPE:
                         paymentResult = paymentManager.processStripePayment(reservationId, gatewayToken, reservationCost.getPriceWithVAT(), event, email, customerName, billingAddress);
@@ -429,6 +414,12 @@ public class TicketReservationManager {
             } else {
                 paymentResult = PaymentResult.successful(NOT_YET_PAID_TRANSACTION_ID);
             }
+            if(!paymentResult.isSuccessful()) {
+                return paymentResult;
+            }
+            if(toBePaid) {
+                generateInvoiceNumber(event, reservationId, email, customerName, userLanguage, billingAddress, customerReference, reservationCost, invoiceRequested, vatCountryCode, vatNr, vatStatus);
+            }
             completeReservation(event, reservationId, email, customerName, userLanguage, billingAddress, specialPriceSessionId, paymentProxy, customerReference, tcAccepted, privacyPolicyAccepted);
             return paymentResult;
         } catch(Exception ex) {
@@ -438,6 +429,24 @@ public class TicketReservationManager {
             return PaymentResult.unsuccessful("error.STEP2_STRIPE_unexpected");
         }
 
+    }
+
+    private void generateInvoiceNumber(Event event, String reservationId, String email, CustomerName customerName, Locale userLanguage, String billingAddress, String customerReference, TotalPrice reservationCost, boolean invoiceRequested, String vatCountryCode, String vatNr, PriceContainer.VatStatus vatStatus) {
+
+        if(!invoiceRequested || !configurationManager.hasAllConfigurationsForInvoice(event)) {
+            return;
+        }
+
+        String invoiceNumber = extensionManager.handleInvoiceGeneration(event, reservationId, email, customerName, userLanguage, billingAddress, customerReference, reservationCost, true, vatCountryCode, vatNr, vatStatus)
+            .flatMap(invoiceGeneration -> Optional.ofNullable(StringUtils.trimToNull(invoiceGeneration.getInvoiceNumber())))
+            .orElseGet(() -> {
+                int invoiceSequence = invoiceSequencesRepository.lockReservationForUpdate(event.getOrganizationId());
+                invoiceSequencesRepository.incrementSequenceFor(event.getOrganizationId());
+                String pattern = configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.INVOICE_NUMBER_PATTERN), "%d");
+                return String.format(pattern, invoiceSequence);
+            });
+
+        ticketReservationRepository.setInvoiceNumber(reservationId, invoiceNumber);
     }
 
     private boolean isDiscountCodeUsageExceeded(String reservationId) {
@@ -872,9 +881,9 @@ public class TicketReservationManager {
                                                           Stream<Pair<AdditionalService, List<AdditionalServiceItem>>> additionalServiceItems) {
 
         List<TicketPriceContainer> ticketPrices = tickets.stream().map(t -> TicketPriceContainer.from(t, reservationVatStatus, event, promoCodeDiscount)).collect(toList());
-        BigDecimal totalVAT = ticketPrices.stream().map(TicketPriceContainer::getVAT).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalDiscount = ticketPrices.stream().map(TicketPriceContainer::getAppliedDiscount).reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalNET = ticketPrices.stream().map(TicketPriceContainer::getFinalPrice).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal totalVAT = calcTotal(ticketPrices, PriceContainer::getRawVAT);
+        BigDecimal totalDiscount = calcTotal(ticketPrices, PriceContainer::getAppliedDiscount);
+        BigDecimal totalNET = calcTotal(ticketPrices, PriceContainer::getFinalPrice);
         int discountedTickets = (int) ticketPrices.stream().filter(t -> t.getAppliedDiscount().compareTo(BigDecimal.ZERO) > 0).count();
         int discountAppliedCount = discountedTickets <= 1 || promoCodeDiscount.getDiscountType() == DiscountType.FIXED_AMOUNT ? discountedTickets : 1;
 
@@ -882,10 +891,14 @@ public class TicketReservationManager {
             .flatMap(generateASIPriceContainers(event, null))
             .collect(toList());
 
-        BigDecimal asTotalVAT = asPrices.stream().map(AdditionalServiceItemPriceContainer::getVAT).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal asTotalVAT = calcTotal(asPrices, PriceContainer::getRawVAT);
         //FIXME discount is not applied to donations, as it wouldn't make sense. Must be implemented for #111
-        BigDecimal asTotalNET = asPrices.stream().map(AdditionalServiceItemPriceContainer::getFinalPrice).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal asTotalNET = calcTotal(asPrices, PriceContainer::getFinalPrice);
         return new TotalPrice(unitToCents(totalNET.add(asTotalNET)), unitToCents(totalVAT.add(asTotalVAT)), -(MonetaryUtil.unitToCents(totalDiscount)), discountAppliedCount);
+    }
+
+    private static BigDecimal calcTotal(List<? extends PriceContainer> elements, Function<? super PriceContainer, BigDecimal> operator) {
+        return elements.stream().map(operator).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private static Function<Pair<AdditionalService, List<AdditionalServiceItem>>, Stream<? extends AdditionalServiceItemPriceContainer>> generateASIPriceContainers(Event event, PromoCodeDiscount discount) {
@@ -959,10 +972,10 @@ public class TicketReservationManager {
             .collect(Collectors.groupingBy(TicketPriceContainer::getCategoryId))
             .forEach((categoryId, ticketsByCategory) -> {
                 final int subTotal = ticketsByCategory.stream().mapToInt(TicketPriceContainer::getSummarySrcPriceCts).sum();
-                final int subTotalBeforeVat = ticketsByCategory.stream().mapToInt(TicketPriceContainer::getSummaryPriceBeforeVatCts).sum();
+                final int subTotalBeforeVat = SummaryPriceContainer.getSummaryPriceBeforeVatCts(ticketsByCategory);
                 TicketPriceContainer firstTicket = ticketsByCategory.get(0);
                 final int ticketPriceCts = firstTicket.getSummarySrcPriceCts();
-                final int priceBeforeVat = firstTicket.getSummaryPriceBeforeVatCts();
+                final int priceBeforeVat = SummaryPriceContainer.getSummaryPriceBeforeVatCts(singletonList(firstTicket));
                 String categoryName = ticketCategoryRepository.getByIdAndActive(categoryId, event.getId()).getName();
                 summary.add(new SummaryRow(categoryName, formatCents(ticketPriceCts), formatCents(priceBeforeVat), ticketsByCategory.size(), formatCents(subTotal), formatCents(subTotalBeforeVat), subTotal, SummaryRow.SummaryType.TICKET));
             });
@@ -977,8 +990,8 @@ public class TicketReservationManager {
                 List<AdditionalServiceItemPriceContainer> prices = generateASIPriceContainers(event, null).apply(entry).collect(toList());
                 AdditionalServiceItemPriceContainer first = prices.get(0);
                 final int subtotal = prices.stream().mapToInt(AdditionalServiceItemPriceContainer::getSrcPriceCts).sum();
-                final int subtotalBeforeVat = prices.stream().mapToInt(AdditionalServiceItemPriceContainer::getSummaryPriceBeforeVatCts).sum();
-                return new SummaryRow(title.getValue(), formatCents(first.getSrcPriceCts()), formatCents(first.getSummaryPriceBeforeVatCts()), prices.size(), formatCents(subtotal), formatCents(subtotalBeforeVat), subtotal, SummaryRow.SummaryType.ADDITIONAL_SERVICE);
+                final int subtotalBeforeVat = SummaryPriceContainer.getSummaryPriceBeforeVatCts(prices);
+                return new SummaryRow(title.getValue(), formatCents(first.getSrcPriceCts()), formatCents(SummaryPriceContainer.getSummaryPriceBeforeVatCts(singletonList(first))), prices.size(), formatCents(subtotal), formatCents(subtotalBeforeVat), subtotal, SummaryRow.SummaryType.ADDITIONAL_SERVICE);
             }).collect(Collectors.toList()));
 
         Optional.ofNullable(promoCodeDiscount).ifPresent(promo -> {
@@ -1053,7 +1066,9 @@ public class TicketReservationManager {
         ticketFieldRepository.deleteAllValuesForReservations(reservationIdsToRemove);
         Event event = eventRepository.findByReservationId(reservationId);
         int updatedAS = additionalServiceItemRepository.updateItemsStatusWithReservationUUID(reservationId, expired ? AdditionalServiceItemStatus.EXPIRED : AdditionalServiceItemStatus.CANCELLED);
-        int updatedTickets = ticketRepository.findTicketsInReservation(reservationId).stream().mapToInt(t -> ticketRepository.releaseExpiredTicket(reservationId, event.getId(), t.getId())).sum();
+        int updatedTickets = ticketRepository.findTicketIdsInReservation(reservationId).stream().mapToInt(
+            tickedId -> ticketRepository.releaseExpiredTicket(reservationId, event.getId(), tickedId, UUID.randomUUID().toString())
+        ).sum();
         Validate.isTrue(updatedTickets  + updatedAS > 0, "no items have been updated");
         waitingQueueManager.fireReservationExpired(reservationId);
         groupManager.deleteWhitelistedTicketsForReservation(reservationId);
