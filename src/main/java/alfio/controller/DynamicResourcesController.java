@@ -1,16 +1,16 @@
 /**
  * This file is part of alf.io.
- *
+ * <p>
  * alf.io is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- *
+ * <p>
  * alf.io is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
+ * <p>
  * You should have received a copy of the GNU General Public License
  * along with alf.io.  If not, see <http://www.gnu.org/licenses/>.
  */
@@ -70,6 +70,14 @@ public class DynamicResourcesController {
         } else {
             script = id.map(x -> String.format(GOOGLE_ANALYTICS_SCRIPT, x)).orElse(EMPTY);
         }
+        response.getWriter().write(script);
+    }
+
+    @RequestMapping("/resources/js/facebook-pixel")
+    public void getFacebookScript(HttpServletResponse response, @RequestParam("e") Integer eventId) throws IOException {
+        response.setContentType("application/javascript");
+        Optional<Event> ev = Optional.ofNullable(eventId).flatMap(id -> Optional.ofNullable(eventRepository.findById(id)));
+        final String script = templateManager.renderTemplate(ev, TemplateResource.FACEBOOK_PIXEL, new HashMap<>(), Locale.ENGLISH);
         response.getWriter().write(script);
     }
 }

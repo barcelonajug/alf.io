@@ -18,6 +18,14 @@
     {{/event.fileBlobIdIsPresent}}
 {{/event.imageIsPresent}}
     <meta property="og:description" content="{{#i18n}}{{pageTitle}}[{{event.displayName}}]{{/i18n}}" />
+
+    <!-- Facebook pixel-->
+    <script src="{{request.contextPath}}/resources/js/facebook-pixel?e={{event.id}}"></script>
+    <noscript><img height="1" width="1" style="display:none"
+    src="https://www.facebook.com/tr?id=1550418758415937&ev=PageView&noscript=1"
+        /></noscript>
+    <!-- End Facebook pixel -->
+
 </head>
 <body>
 
