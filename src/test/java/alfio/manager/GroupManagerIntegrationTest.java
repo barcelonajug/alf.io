@@ -97,7 +97,7 @@ public class GroupManagerIntegrationTest extends BaseIntegrationTest {
             new TicketCategoryModification(null, "default", 10,
                 new DateTimeModification(LocalDate.now().plusDays(1), LocalTime.now()),
                 new DateTimeModification(LocalDate.now().plusDays(2), LocalTime.now()),
-                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null));
+                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null, null));
         Pair<Event, String> pair = initEvent(categories, organizationRepository, userManager, eventManager, eventRepository);
         Event event = pair.getKey();
         Group group = groupManager.createNew("test", "This is a test", event.getOrganizationId());
@@ -115,7 +115,7 @@ public class GroupManagerIntegrationTest extends BaseIntegrationTest {
         assertFalse("Group is empty, therefore no value is allowed", groupManager.isAllowed("test@test.ch", event.getId(), categoryId));
         Result<Integer> items = groupManager.insertMembers(group.getId(), Collections.singletonList(new GroupMemberModification(null,"test@test.ch", "description")));
         assertTrue(items.isSuccess());
-        assertEquals(new Integer(1), items.getData());
+        assertEquals(Integer.valueOf(1), items.getData());
         assertTrue("Value should be allowed", groupManager.isAllowed("test@test.ch", event.getId(), categoryId));
 
         TicketReservationModification ticketReservation = new TicketReservationModification();
@@ -145,7 +145,7 @@ public class GroupManagerIntegrationTest extends BaseIntegrationTest {
             new TicketCategoryModification(null, "default", 10,
                 new DateTimeModification(LocalDate.now().plusDays(1), LocalTime.now()),
                 new DateTimeModification(LocalDate.now().plusDays(2), LocalTime.now()),
-                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null));
+                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null, null));
         Pair<Event, String> pair = initEvent(categories, organizationRepository, userManager, eventManager, eventRepository);
         Event event = pair.getKey();
         Group group = groupManager.createNew("test", "This is a test", event.getOrganizationId());

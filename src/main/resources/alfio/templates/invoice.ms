@@ -135,7 +135,6 @@
                     {{/ticketReservation.hasBillingAddress}}
                     {{#ticketReservation.hasVatNumber}}
                         <p>{{#i18n}}invoice.vat [{{vatTranslation}}]{{/i18n}} {{ticketReservation.vatNr}}</p>
-                        <p>{{#country-name}}{{ticketReservation.vatCountryCode}} locale:{{#i18n}}locale{{/i18n}}{{/country-name}}</p>
                     {{/ticketReservation.hasVatNumber}}
                 </td>
             </tr>
@@ -189,12 +188,24 @@
             {{/hasRefund}}
         </div>
 
+        {{#invoicingAdditionalInfo}}
+        <pre>{{#italianEInvoicing}}
+{{#i18n}}invoice.vat [{{vatTranslation}}]{{/i18n}}: {{ticketReservation.vatNr}}
+{{#i18n}}invoice-fields.fiscalCode{{/i18n}}: {{fiscalCode}}
+{{#i18n}}invoice-fields.addresseeItalyEInvoice{{/i18n}}: {{referenceType}}
+{{#i18n}}invoice-fields.addressee-code{{/i18n}}: {{addresseeCode}}
+PEC: {{pec}}{{/italianEInvoicing}}
+        </pre>
+        {{/invoicingAdditionalInfo}}
+
         {{#isOfflinePayment}}
             <div class="mb" style="margin-top: 1em">
                 <p>{{#i18n}}invoice.payment-instruction-no-later-than [{{#format-date}}{{expirationDate}} {{#i18n}}datetime.pattern{{/i18n}} locale:{{#i18n}}locale{{/i18n}}{{/format-date}}]{{/i18n}}</p>
                 <br/>
                 <p class="strong">{{#i18n}}invoice.payment-instruction{{/i18n}}</p>
+                {{#hasBankAccountNr}}
                 <p>{{#i18n}}invoice.account-number [{{bankAccountNr}}]{{/i18n}}</p>
+                {{/hasBankAccountNr}}
                 {{#hasBankAccountOnwer}}
                     <p style="margin-bottom:0.5em">{{#i18n}}invoice.payment-to{{/i18n}}</p>
                     {{#bankAccountOnwerAsList}}

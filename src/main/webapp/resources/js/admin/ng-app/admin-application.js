@@ -8,7 +8,9 @@
     var FIELD_TYPES = ['input:text', 'input:tel', 'textarea', 'select', 'country'];
     var ERROR_CODES = { DUPLICATE:'duplicate', MAX_LENGTH:'maxlength', MIN_LENGTH:'minlength'};
     
-    var admin = angular.module('adminApplication', ['ngSanitize','ui.bootstrap', 'ui.router', 'adminDirectives', 'adminServices', 'utilFilters', 'ngMessages', 'ngFileUpload', 'nzToggle', 'alfio-email', 'alfio-util', 'alfio-configuration', 'alfio-additional-services', 'alfio-event-statistic', 'ui.ace', 'monospaced.qrcode', 'checklist-model', 'group']);
+    var admin = angular.module('adminApplication', ['ngSanitize','ui.bootstrap', 'ui.router', 'adminDirectives',
+        'adminServices', 'utilFilters', 'ngMessages', 'ngFileUpload', 'nzToggle', 'alfio-email', 'alfio-util', 'alfio-configuration', 'alfio-additional-services', 'alfio-event-statistic',
+        'ui.ace', 'monospaced.qrcode', 'checklist-model', 'group']);
 
     var loadEvent = {
         'loadEvent': function($stateParams, EventService) {
@@ -215,7 +217,7 @@
                 }
             })
             .state('events.single.reservationsList', {
-                url: '/reservations/',
+                url: '/reservations/?search',
                 template: '<reservations-list event="ctrl.event"></reservations-list>',
                 controller: function(getEvent) {
                     this.event = getEvent.data.event;
@@ -1079,6 +1081,7 @@
                 ticketValidityStart: ticketValidityStart,
                 ticketValidityEnd: ticketValidityEnd,
                 tokenGenerationRequested: category.accessRestricted,
+                ticketCheckInStrategy: category.ticketCheckInStrategy,
                 sticky: false
             };
 
@@ -1087,38 +1090,6 @@
             });
         };
 
-        var getPendingPayments = function() {
-            EventService.getPendingPayments($stateParams.eventName).success(function(data) {
-                $scope.pendingReservations = data;
-            });
-        };
-
-        $scope.registerPayment = function(eventName, id) {
-            $scope.loading = true;
-            EventService.registerPayment(eventName, id).success(function() {
-                loadData().then(function(res) {
-                    if(res.data.event.visibleForCurrentUser) {
-                        getPendingPayments();
-                    }
-                });
-            }).error(function() {
-                $scope.loading = false;
-            });
-        };
-        $scope.deletePayment = function(eventName, id) {
-            $scope.loading = true;
-            EventService.cancelPayment(eventName, id).success(function() {
-                loadData().then(function(res) {
-                    if(res.data.event.visibleForCurrentUser) {
-                        getPendingPayments();
-                    }
-                });
-            }).error(function() {
-                $scope.loading = false;
-            });
-        };
-        
-        //
 
         $scope.countActive = function(categories) {
             return _.countBy(categories, 'expired')['false'] || '0';
@@ -1369,20 +1340,24 @@
                     ctrl.event = event;
                     ctrl.close = function() {
                         modal.close();
-                    }
+                    };
                     ctrl.onCreation = function(reservationInfo) {
-                        AdminReservationService.load(reservationInfo.eventName, reservationInfo.reservationId).then(function (reservationDescriptor) {
-                            ctrl.reservationDescriptor = reservationDescriptor.data.data;
-                            ctrl.showReservation = true;
-                        })
-                    }
+                        AdminReservationService.confirm(reservationInfo.eventName, reservationInfo.reservationId).then(function(reservationDescriptor) {
+                            ctrl.onConfirm(reservationInfo);
+                        }, function(err) {
+                            AdminReservationService.load(reservationInfo.eventName, reservationInfo.reservationId).then(function (reservationDescriptor) {
+                                ctrl.reservationDescriptor = reservationDescriptor.data.data;
+                                ctrl.showReservation = true;
+                            });
+                        });
+                    };
                     ctrl.onUpdate = function(reservationInfo) {
                         ctrl.resetReservationView = true;
                         AdminReservationService.load(reservationInfo.eventName, reservationInfo.reservationId).then(function (reservationDescriptor) {
                             ctrl.reservationDescriptor = reservationDescriptor.data.data;
                             ctrl.resetReservationView = false;
                         })
-                    }
+                    };
 
                     ctrl.onConfirm = function(reservationInfo) {
                         reloadTickets();
@@ -1458,7 +1433,7 @@
 
             var filter = function(ticket) {
                 return ticket.eventId === eventId && (!query || query === '' ||
-                    ([ticket.fullName, ticket.email, ticket.ticketCategory.name, ticket.uuid, ticket.ticketsReservationId].join('/')).toLowerCase().indexOf(query.toLowerCase()) > -1);
+                    ([ticket.fullName, ticket.email, ticket.ticketCategory.name, ticket.uuid, ticket.ticketsReservationId, ticket.extReference].join('/')).toLowerCase().indexOf(query.toLowerCase()) > -1);
             };
 
             var deferred1 = $q.defer();
@@ -1705,20 +1680,50 @@
         });
     });
 
-    admin.controller('PendingPaymentsController', function($scope, EventService, $stateParams, $log, $window) {
+    admin.controller('PendingPaymentsController', function($scope, EventService, $stateParams, $log, $window, $uibModal, ReservationIdentifierConfiguration) {
 
         EventService.getEvent($stateParams.eventName).then(function(result) {
             $scope.event = result.data.event;
+            getPendingPayments();
         });
 
         var getPendingPayments = function(force) {
             EventService.getPendingPayments($stateParams.eventName, force).success(function(data) {
-                $scope.pendingReservations = data;
+                var pendingReservations = data.map(function(pending) {
+                    ReservationIdentifierConfiguration.getReservationIdentifier($scope.event.id, pending.ticketReservation, false).then(function(result) {
+                        pending.publicId = result;
+                    });
+                    return pending;
+                });
+                $scope.pendingReservations = pendingReservations;
+                $scope.orderByFieldDesc = {};
+
+                $scope.changeSorting = function(field) {
+                    $scope.orderByField = field;
+                    var sortDesc = false;
+                    if(angular.isDefined($scope.orderByFieldDesc[field])) {
+                        sortDesc = !$scope.orderByFieldDesc[field];
+                    }
+                    $scope.orderByFieldDesc[field]=sortDesc;
+                    var sorted = _.sortBy(pendingReservations, field);
+                    if(sortDesc) {
+                        sorted = _(sorted).reverse().value()
+                    }
+                    $scope.pendingReservations = sorted;
+                };
+
+                $scope.sortingIndicator = function(field) {
+                    if($scope.orderByField === field) {
+                        return $scope.orderByFieldDesc[field] ? 'fa-sort-desc' : 'fa-sort-asc';
+                    }
+                    return '';
+                };
                 $scope.loading = false;
             });
         };
 
-        $scope.eventName = $stateParams.eventName;
+        var eventName = $stateParams.eventName;
+        $scope.eventName = eventName;
         $scope.uploadSuccess = function(data) {
             $scope.results = data;
             getPendingPayments();
@@ -1726,7 +1731,6 @@
 
         $scope.uploadUrl = '/admin/api/events/'+$stateParams.eventName+'/pending-payments/bulk-confirmation';
 
-        getPendingPayments();
         $scope.registerPayment = function(eventName, id) {
             $scope.loading = true;
             EventService.registerPayment(eventName, id).success(function() {
@@ -1735,14 +1739,68 @@
                 $scope.loading = false;
             });
         };
-        $scope.deletePayment = function(eventName, id) {
-            if(!$window.confirm('Do you really want to delete this reservation?')) {
-                return;
-            }
-            $scope.loading = true;
-            EventService.cancelPayment(eventName, id).success(function() {
+
+        $scope.showTransactionDialog = function(pendingPaymentDescriptor) {
+            $uibModal.open({
+                size:'md',
+                templateUrl:BASE_STATIC_URL + '/pending-payments/show-transaction-modal.html',
+                backdrop: 'static',
+                controller: function($scope) {
+                    var ctrl = this;
+                    ctrl.paymentInfo = pendingPaymentDescriptor;
+                    ctrl.reservationId = pendingPaymentDescriptor.ticketReservation.id;
+                    ctrl.cancel = function() {
+                        $scope.$dismiss('cancelled');
+                    };
+                    ctrl.confirm = function() {
+                        $scope.$close('CONFIRM');
+                    };
+                    ctrl.discardPayment = function() {
+                        $scope.$close('DISCARD');
+                    };
+                },
+                controllerAs: '$ctrl'
+            }).result.then(function(command) {
+                if(command === 'CONFIRM') {
+                    $scope.loading = true;
+                    return EventService.registerPayment(eventName, pendingPaymentDescriptor.ticketReservation.id);
+                } else if (command === 'DISCARD') {
+                    $scope.loading = true;
+                    return EventService.cancelMatchingPayment(eventName, pendingPaymentDescriptor.ticketReservation.id, pendingPaymentDescriptor.transaction.id);
+                }
+                return null;
+            }).then(function() {
                 getPendingPayments(true);
-            }).error(function() {
+            }, function() {
+                $scope.loading = false;
+            });
+        };
+
+        $scope.deletePayment = function(eventName, id, credit) {
+            var action = credit ? "credit" : "cancel";
+            var confirmPromise = $uibModal.open({
+                size:'md',
+                templateUrl:BASE_STATIC_URL + '/pending-payments/delete-or-credit-modal.html',
+                backdrop: 'static',
+                controller: function($scope) {
+                    var ctrl = this;
+                    ctrl.credit = credit;
+                    ctrl.reservationId = id;
+                    ctrl.cancel = function() {
+                        $scope.$dismiss('canceled');
+                    };
+                    ctrl.confirm = function() {
+                        $scope.$close(true);
+                    };
+                },
+                controllerAs: '$ctrl'
+            }).result;
+
+            confirmPromise.then(function() {
+                return EventService.cancelPayment(eventName, id, credit);
+            }).then(function() {
+                getPendingPayments(true);
+            }, function() {
                 $scope.loading = false;
             });
         };

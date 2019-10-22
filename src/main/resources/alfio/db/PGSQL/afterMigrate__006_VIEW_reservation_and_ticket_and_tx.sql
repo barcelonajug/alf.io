@@ -49,6 +49,14 @@ create view reservation_and_ticket_and_tx as (select
     tickets_reservation.billing_address_line2 tr_billing_address_line2,
     tickets_reservation.billing_address_city tr_billing_address_city,
     tickets_reservation.billing_address_zip tr_billing_address_zip,
+    tickets_reservation.registration_ts tr_registration_ts,
+    tickets_reservation.invoicing_additional_information tr_invoicing_additional_information,
+
+    tickets_reservation.src_price_cts tr_src_price_cts,
+    tickets_reservation.final_price_cts tr_final_price_cts,
+    tickets_reservation.vat_cts tr_vat_cts,
+    tickets_reservation.discount_cts tr_discount_cts,
+    tickets_reservation.currency_code tr_currency_code,
 
     ticket.id t_id,
     ticket.uuid t_uuid,
@@ -79,8 +87,18 @@ create view reservation_and_ticket_and_tx as (select
     b_transaction.description bt_description,
     b_transaction.payment_proxy bt_payment_proxy,
     b_transaction.gtw_fee bt_gtw_fee,
-    b_transaction.plat_fee bt_plat_fee
+    b_transaction.plat_fee bt_plat_fee,
+    b_transaction.status bt_status,
+    b_transaction.metadata bt_metadata,
+
+    (select count(ticket.id) from ticket where ticket.tickets_reservation_id = tickets_reservation.id) as tickets_count,
+    promo_code.promo_code as promo_code,
+    special_price.code as special_price_token
+
 
 from tickets_reservation
 left outer join ticket on tickets_reservation.id = ticket.tickets_reservation_id
-left outer join b_transaction on ticket.tickets_reservation_id = b_transaction.reservation_id);
+left outer join b_transaction on ticket.tickets_reservation_id = b_transaction.reservation_id
+left outer join promo_code on tickets_reservation.promo_code_id_fk = promo_code.id
+left outer join special_price on ticket.special_price_id_fk = special_price.id
+);

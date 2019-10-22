@@ -16,6 +16,7 @@
  */
 package alfio.manager;
 
+import alfio.manager.support.PaymentResult;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.*;
 import alfio.model.system.Configuration;
@@ -51,9 +52,31 @@ public class PaymentManager {
     private final List<PaymentProvider> paymentProviders; // injected by Spring
 
     public Optional<PaymentProvider> lookupProviderByMethod(PaymentMethod paymentMethod, PaymentContext context) {
+        return compatibleStream(paymentMethod, context).findFirst();
+    }
+
+    Optional<PaymentProvider> lookupProviderByMethodAndCapabilities(PaymentMethod paymentMethod,
+                                                                    PaymentContext context,
+                                                                    List<Class<? extends Capability>> capabilities) {
+        return doLookupProvidersByMethodAndCapabilities(paymentMethod, context, capabilities).findFirst();
+    }
+
+    List<PaymentProvider> lookupProvidersByMethodAndCapabilities(PaymentMethod paymentMethod,
+                                                                 PaymentContext context,
+                                                                 List<Class<? extends Capability>> capabilities) {
+        return doLookupProvidersByMethodAndCapabilities(paymentMethod, context, capabilities).collect(Collectors.toList());
+    }
+
+    private Stream<PaymentProvider> doLookupProvidersByMethodAndCapabilities(PaymentMethod paymentMethod,
+                                                                             PaymentContext context,
+                                                                             List<Class<? extends Capability>> capabilities) {
+        return compatibleStream(paymentMethod, context)
+            .filter(p -> Objects.requireNonNull(capabilities).stream().allMatch(c -> c.isInstance(p)));
+    }
+
+    private Stream<PaymentProvider> compatibleStream(PaymentMethod paymentMethod, PaymentContext context) {
         return paymentProviders.stream()
-                .filter(p -> p.accept(paymentMethod, context))
-                .findFirst();
+            .filter(p -> p.accept(paymentMethod, context));
     }
 
     private List<PaymentMethodDTO> getPaymentMethods(PaymentContext context) {
@@ -113,7 +136,7 @@ public class PaymentManager {
                 Transaction transaction = info.getTransaction();
                 String transactionId = transaction.getTransactionId();
                 PaymentInformation paymentInformation = info.getPaymentInformation();
-                if(paymentInformation != null) {
+                if(paymentInformation != null && feesUpdated(transaction, paymentInformation)) {
                     transactionRepository.updateFees(transactionId, reservation.getId(), safeParseLong(paymentInformation.getPlatformFee()), safeParseLong(paymentInformation.getFee()));
                 }
             } catch (Exception e) {
@@ -123,8 +146,14 @@ public class PaymentManager {
         return maybeTransaction.orElseGet(() -> new TransactionAndPaymentInfo(reservation.getPaymentMethod(),null, new PaymentInformation(reservation.getPaidAmount(), null, null, null)));
     }
 
+    private boolean feesUpdated(Transaction transaction, PaymentInformation paymentInformation) {
+        return transaction.getPlatformFee() != safeParseLong(paymentInformation.getPlatformFee())
+            || transaction.getGatewayFee()  != safeParseLong(paymentInformation.getFee());
+    }
+
     private TransactionAndPaymentInfo internalGetInfo(TicketReservation reservation, Event event, Transaction transaction) {
-        return lookupProviderByMethod(reservation.getPaymentMethod().getPaymentMethod(), new PaymentContext(event))
+        return Optional.ofNullable(reservation.getPaymentMethod())
+            .flatMap(pm -> lookupProviderByMethod(pm.getPaymentMethod(), new PaymentContext(event)))
             .filter(PaymentInfo.class::isInstance)
             .map(provider -> {
                 Optional<PaymentInformation> info = ((PaymentInfo) provider).getInfo(transaction, event);
@@ -145,16 +174,37 @@ public class PaymentManager {
     }
 
     private Stream<? extends Map.Entry<String, ?>> getProviderOptions(PaymentContext context, PaymentProxy pp) {
-        return lookupProviderByMethod(pp.getPaymentMethod(), context)
-            .map(it -> it.getModelOptions(context).entrySet().stream().filter(kv -> kv.getValue() != null))
-            .orElse(Stream.empty());
+        return lookupProviderByMethod(pp.getPaymentMethod(), context).stream()
+            .flatMap(it -> it.getModelOptions(context).entrySet().stream().filter(kv -> kv.getValue() != null));
     }
 
     public PaymentToken buildPaymentToken(String gatewayToken, PaymentProxy proxy, PaymentContext context) {
         return lookupProviderByMethod(proxy.getPaymentMethod(), context)
             .filter(ClientServerTokenRequest.class::isInstance)
             .map(ClientServerTokenRequest.class::cast)
-            .map(pp -> pp.buildPaymentToken(gatewayToken))
+            .map(pp -> pp.buildPaymentToken(gatewayToken, context))
+            .orElse(null);
+    }
+
+    public Optional<PaymentResult> getTransactionStatus(TicketReservation reservation, PaymentMethod paymentMethod) {
+        return transactionRepository.loadOptionalByReservationId(reservation.getId())
+            .filter(transaction -> transaction.getPaymentProxy().getPaymentMethod() == paymentMethod)
+            .map(transaction -> {
+                switch(transaction.getStatus()) {
+                    case COMPLETE:
+                        return PaymentResult.successful(transaction.getPaymentId());
+                    case FAILED:
+                        return PaymentResult.failed(null);
+                    default:
+                        return PaymentResult.initialized(transaction.getPaymentId());
+                }
+            });
+    }
+
+    public PaymentMethod getPaymentMethodForReservation(TicketReservation ticketReservation) {
+        return transactionRepository.loadOptionalByReservationId(ticketReservation.getId())
+            .map(Transaction::getPaymentProxy)
+            .map(PaymentProxy::getPaymentMethod)
             .orElse(null);
     }
 

@@ -18,8 +18,8 @@ package alfio.util;
 
 import alfio.controller.form.UpdateTicketOwnerForm;
 import alfio.controller.form.WaitingQueueSubscriptionForm;
-import alfio.manager.EuVatChecker;
 import alfio.manager.GroupManager;
+import alfio.manager.SameCountryValidator;
 import alfio.model.ContentLanguage;
 import alfio.model.Event;
 import alfio.model.TicketFieldConfiguration;
@@ -30,7 +30,6 @@ import alfio.model.modification.support.LocationDescriptor;
 import alfio.model.result.ErrorCode;
 import alfio.model.result.Result;
 import alfio.model.result.ValidationResult;
-import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -39,12 +38,8 @@ import org.springframework.validation.Errors;
 import org.springframework.validation.ValidationUtils;
 
 import java.math.BigDecimal;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.function.Function;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -90,7 +85,7 @@ public final class Validator {
     private static boolean isLocationMissing(EventModification em) {
         LocationDescriptor descriptor = em.getLocationDescriptor();
         return descriptor == null
-            || isAnyBlank(descriptor.getLatitude(), descriptor.getLongitude(), descriptor.getTimeZone());
+            || isAnyBlank(descriptor.getTimeZone());
     }
 
     public static ValidationResult validateTicketCategories(EventModification ev, Errors errors) {
@@ -198,8 +193,9 @@ public final class Validator {
                                                             Optional<Errors> errorsOptional,
                                                             Event event,
                                                             String baseField,
-                                                            EuVatChecker.SameCountryValidator vatValidator) {
-        if(!errorsOptional.isPresent()) {
+                                                            SameCountryValidator vatValidator,
+                                                            Integer ticketCategoryId) {
+        if(errorsOptional.isEmpty()) {
             return ValidationResult.success();//already validated
         }
 
@@ -326,7 +322,7 @@ public final class Validator {
     }
 
     public static ValidationResult validateAdditionalService(EventModification.AdditionalService additionalService, EventModification eventModification, Errors errors) {
-        if(additionalService.isFixPrice() && !Optional.ofNullable(additionalService.getPrice()).filter(p -> p.compareTo(BigDecimal.ZERO) >= 0).isPresent()) {
+        if(additionalService.isFixPrice() && Optional.ofNullable(additionalService.getPrice()).filter(p -> p.compareTo(BigDecimal.ZERO) >= 0).isEmpty()) {
             errors.rejectValue("additionalServices", "error.price");
         }
 
@@ -359,7 +355,7 @@ public final class Validator {
 
     private static boolean containsAllRequiredTranslations(EventModification eventModification, List<EventModification.AdditionalServiceText> descriptions) {
         Optional<EventModification> optional = Optional.ofNullable(eventModification);
-        return !optional.isPresent() ||
+        return optional.isEmpty() ||
             optional.map(e -> ContentLanguage.findAllFor(e.getLocales()))
                 .filter(l -> l.stream().allMatch(l1 -> descriptions.stream().anyMatch(d -> d.getLocale().equals(l1.getLanguage()))))
                 .isPresent();
@@ -380,7 +376,7 @@ public final class Validator {
     @RequiredArgsConstructor
     public static class AdvancedTicketAssignmentValidator implements Function<AdvancedValidationContext, Result<Void>> {
 
-        private final EuVatChecker.SameCountryValidator vatValidator;
+        private final SameCountryValidator vatValidator;
         private final GroupManager.WhitelistValidator whitelistValidator;
 
 
@@ -392,11 +388,11 @@ public final class Validator {
                 .filter(f -> context.updateTicketOwnerForm.getAdditional() !=null && context.updateTicketOwnerForm.getAdditional().containsKey(f.getName()))
                 .findFirst();
 
-            Optional<String> vatNr = vatField.map(c -> context.updateTicketOwnerForm.getAdditional().get(c.getName()).get(0));
+            Optional<String> vatNr = vatField.map(c -> Objects.requireNonNull(context.updateTicketOwnerForm.getAdditional()).get(c.getName()).get(0));
             String vatFieldName = vatField.map(TicketFieldConfiguration::getName).orElse("");
 
             return new Result.Builder<Void>()
-                .checkPrecondition(() -> !vatNr.isPresent() || vatValidator.test(vatNr.get()), ErrorCode.custom(ErrorsCode.STEP_2_INVALID_VAT, "additional['"+vatFieldName+"']"))
+                .checkPrecondition(() -> vatNr.isEmpty() || vatValidator.test(vatNr.get()), ErrorCode.custom(ErrorsCode.STEP_2_INVALID_VAT, "additional['"+vatFieldName+"']"))
                 .checkPrecondition(() -> whitelistValidator.test(new GroupManager.WhitelistValidationItem(context.categoryId, context.updateTicketOwnerForm.getEmail())), ErrorCode.custom(ErrorsCode.STEP_2_WHITELIST_CHECK_FAILED, "email"))
                 .build(() -> null);
         }

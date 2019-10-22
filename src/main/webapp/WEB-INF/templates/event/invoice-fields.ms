@@ -1,3 +1,34 @@
+<div class="page-header">
+    <h2>{{#i18n}}reservation-page.invoice-details{{/i18n}}</h2>
+</div>
+
+<div class="row">
+    <div class="col-xs-12">
+        <div class="form-group">
+            <label for="">
+                {{#i18n}}invoice.type{{/i18n}}
+            </label>
+            <div>
+                <label class="radio-inline">
+                    <input type="radio" name="addCompanyBillingDetails" id="invoiceTypePrivate" value="false" {{^paymentForm.addCompanyBillingDetails}}checked=""{{/paymentForm.addCompanyBillingDetails}}> {{#i18n}}invoice.type.private{{/i18n}}
+                </label>
+                <label class="radio-inline">
+                    <input type="radio" name="addCompanyBillingDetails" id="invoiceTypeBusiness" value="true" {{#paymentForm.addCompanyBillingDetails}}checked=""{{/paymentForm.addCompanyBillingDetails}}> {{#i18n}}invoice.type.business{{/i18n}}
+                </label>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row invoice-business">
+    <div class="col-xs-12">
+        <div class="form-group {{#field-has-error}}[billingAddressCompany] has-error{{/field-has-error}}">
+            <label for="billingAddressCompany" class="control-label">{{#i18n}}reservation-page-complete.company{{/i18n}}</label>
+            <input id="billingAddressCompany" name="billingAddressCompany" class="form-control" type="text" value="{{paymentForm.billingAddressCompany}}" maxlength="255">
+            {{#field-has-error}}[billingAddressCompany]<span class="help-block text-danger">{{#i18n}}{{#field-error}}billingAddressCompany{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
+        </div>
+    </div>
+</div>
 <div class="row">
     <div class="col-xs-12">
         <div class="form-group {{#field-has-error}}[billingAddressLine1] has-error{{/field-has-error}}">
@@ -56,17 +87,16 @@
         </div>
     </div>
     {{#customerReferenceEnabled}}
-        <div class="col-xs-12 col-md-6">
+        <div class="col-xs-12 col-md-6 invoice-business">
             <div class="form-group {{#field-has-error}}[customerReference] has-error{{/field-has-error}}">
                 <label for="customerReference" class="control-label">{{#i18n}}common.customer-reference{{/i18n}}</label>
-                <input type="text" name="customerReference" id="customerReference" class="form-control" maxlength="255" value="{{paymentForm.customerReference}}">
+                <input type="text" name="customerReference" id="customerReference" class="form-control" maxlength="50" value="{{paymentForm.customerReference}}">
                 {{#field-has-error}}[customerReference]<span class="help-block text-danger">{{#i18n}}{{#field-error}}customerReference{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
             </div>
         </div>
     {{/customerReferenceEnabled}}
 </div>
-<input type="hidden" name="invoiceRequested" id="invoice-requested" value="true">
-<div class="row">
+<div class="row invoice-business">
     <div id="vat-number-container">
         <div class="col-md-6">
             <div class="form-group {{#field-has-error}}[vatNr] has-error{{/field-has-error}}">
@@ -78,6 +108,7 @@
                 {{#field-has-error}}[vatNr]<span class="help-block text-danger">{{#i18n}}{{#field-error}}vatNr{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
             </div>
         </div>
+        {{^vatNumberStrictlyRequired}}
         <div class="col-md-6">
             <div class="form-group">
                 <div class="form-check checkbox checkbox-in-form-group">
@@ -88,5 +119,45 @@
                 </div>
             </div>
         </div>
+        {{/vatNumberStrictlyRequired}}
     </div>
 </div>
+{{#enabledItalyEInvoicing}}
+<div class="row" id="italyEInvoicing">
+    <div>
+        <div class="col-md-12">
+            <div class="form-group {{#field-has-error}}[italyEInvoicingFiscalCode] has-error{{/field-has-error}}">
+                <label for="italyEInvoicingFiscalCode">{{#i18n}}invoice-fields.fiscalCode{{/i18n}}</label>
+                <input id="italyEInvoicingFiscalCode" type="text" name="italyEInvoicingFiscalCode" value="{{paymentForm.italyEInvoicingFiscalCode}}" class="form-control">
+            </div>
+        </div>
+        <div class="col-md-12">
+            <div class="form-group {{#field-has-error}}[italyEInvoicingReferenceType] has-error{{/field-has-error}}">
+                <label for="">
+                    {{#i18n}}invoice-fields.addresseeItalyEInvoice{{/i18n}}
+                </label>
+                {{#field-has-error}}[italyEInvoicingReferenceType]<span class="help-block text-danger">{{#i18n}}{{#field-error}}italyEInvoicingReferenceType{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
+            </div>
+        </div>
+        <div class="col-md-12">
+            <div class="form-group {{#field-has-error}}[italyEInvoicingReferenceAddresseeCode] has-error{{/field-has-error}}">
+                <label><input {{#paymentForm.italyEInvoicingTypeAddresseeCode}}checked{{/paymentForm.italyEInvoicingTypeAddresseeCode}} type="radio" value="ADDRESSEE_CODE" name="italyEInvoicingReferenceType"><span class="label-after-radio">{{#i18n}}invoice-fields.addressee-code{{/i18n}}</span></label>
+                <input type="text" maxlength="7" class="form-control" name="italyEInvoicingReferenceAddresseeCode" value="{{paymentForm.italyEInvoicingReferenceAddresseeCode}}">
+                {{#field-has-error}}[italyEInvoicingReferenceAddresseeCode]<span class="help-block text-danger">{{#i18n}}{{#field-error}}italyEInvoicingReferenceAddresseeCode{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
+            </div>
+        </div>
+        <div class="col-md-12">
+            <div class="form-group {{#field-has-error}}[italyEInvoicingReferencePEC] has-error{{/field-has-error}}">
+                <label><input {{#paymentForm.italyEInvoicingTypePEC}}checked{{/paymentForm.italyEInvoicingTypePEC}} type="radio" value="PEC"  name="italyEInvoicingReferenceType"><span class="label-after-radio">{{#i18n}}invoice-fields.pec{{/i18n}}</span></label>
+                <input type="email" class="form-control" name="italyEInvoicingReferencePEC" value="{{paymentForm.italyEInvoicingReferencePEC}}">
+                {{#field-has-error}}[italyEInvoicingReferencePEC]<span class="help-block text-danger">{{#i18n}}{{#field-error}}italyEInvoicingReferencePEC{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
+            </div>
+        </div>
+        <div class="col-md-12">
+            <div class="form-group">
+                <label><input {{#paymentForm.italyEInvoicingTypeNone}}checked{{/paymentForm.italyEInvoicingTypeNone}} type="radio" value="NONE"  name="italyEInvoicingReferenceType"><span class="label-after-radio">{{#i18n}}invoice.fields.neither{{/i18n}}</span></label>
+            </div>
+        </div>
+    </div>
+</div>
+{{/enabledItalyEInvoicing}}

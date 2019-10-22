@@ -16,6 +16,7 @@
  */
 package alfio.model.system;
 
+import alfio.model.EventAndOrganizationId;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -43,13 +44,12 @@ public class Configuration implements Comparable<Configuration> {
     public Configuration(@Column("id") int id,
                          @Column("c_key") String key,
                          @Column("c_value") String value,
-                         @Column("description") String description,
                          @Column("configuration_path_level") ConfigurationPathLevel configurationPathLevel) {
         this.id = id;
         this.key = key;
         this.value = value;
-        this.description = description;
         this.configurationKey = ConfigurationKeys.safeValueOf(key);
+        this.description = configurationKey.getDescription();
         this.configurationPathLevel = configurationPathLevel;
         this.basic = this.configurationKey.isBasic();
     }
@@ -201,12 +201,12 @@ public class Configuration implements Comparable<Configuration> {
         return from(Optional.of(organizationId), Optional.empty(), Optional.empty(), key);
     }
 
-    public static ConfigurationPathKey from(int organizationId, int eventId, ConfigurationKeys key) {
-        return from(Optional.of(organizationId), Optional.of(eventId), Optional.empty(), key);
+    public static ConfigurationPathKey from(EventAndOrganizationId eventAndOrganizationId, ConfigurationKeys key) {
+        return from(Optional.of(eventAndOrganizationId.getOrganizationId()), Optional.of(eventAndOrganizationId.getId()), Optional.empty(), key);
     }
 
-    public static Function<ConfigurationKeys, ConfigurationPathKey> from(int organizationId, int eventId) {
-        return (p) -> from(organizationId, eventId, p);
+    public static Function<ConfigurationKeys, ConfigurationPathKey> from(EventAndOrganizationId e) {
+        return (p) -> from(e, p);
     }
 
     public static Function<ConfigurationKeys, ConfigurationPathKey> from(int organizationId) {
@@ -231,9 +231,9 @@ public class Configuration implements Comparable<Configuration> {
             case ORGANIZATION:
                 return getOrganizationConfiguration(organizationId.get(), key);
             case EVENT:
-                return getEventConfiguration(organizationId.get(), eventId.get(), key);
+                return getEventConfiguration(organizationId.get(), eventId.orElseThrow(), key);
             case TICKET_CATEGORY:
-                return getTicketCategoryConfiguration(organizationId.get(), eventId.get(), ticketCategoryId.get(), key);
+                return getTicketCategoryConfiguration(organizationId.get(), eventId.orElseThrow(), ticketCategoryId.orElseThrow(), key);
         }
         return getSystemConfiguration(key);
     }

@@ -5,8 +5,10 @@
 
     window.alfio = {
         registerPaymentHandler: function(handler) {
-            handler.init();
-            paymentHandlers.push(handler);
+            if(handler.active()) {
+                handler.init();
+                paymentHandlers.push(handler);
+            }
         }
     };
 
@@ -43,13 +45,12 @@
 
         $("#cancel-reservation").click(function(e) {
             var $form = $('#payment-form');
-            $("input[type=submit], button:not([type=button])", $form ).unbind('click');
+            $("input[type=submit]", $form ).unbind('click');
             $form.unbind('submit');
             $("input", $form).unbind('keypress');
 
             $form
                 .attr('novalidate', 'novalidate')
-                .unbind('submit', submitForm)
                 .find('button').prop('disabled', true);
             $form.trigger("reset");
             $form.append($('<input type="hidden" name="backFromOverview" />').val(true))
@@ -59,12 +60,15 @@
 
         function markFieldAsError(node) {
             $(node).parent().addClass('has-error');
-            if($(node).parent().parent().parent().hasClass('form-group')) {
-                $(node).parent().parent().parent().addClass('has-error');
+            var parent = $(node).parent().parent();
+            if(parent.hasClass('checkbox') || parent.hasClass('radio')) {
+                parent.addClass('has-error');
+            } else if(parent.parent().hasClass('form-group')) {
+                parent.parent().addClass('has-error');
             }
         }
         // based on http://tjvantoll.com/2012/08/05/html5-form-validation-showing-all-error-messages/
-                // http://stackoverflow.com/questions/13798313/set-custom-html5-required-field-validation-message
+        // http://stackoverflow.com/questions/13798313/set-custom-html5-required-field-validation-message
         var createAllErrors = function() {
             var form = $(this);
 
@@ -74,6 +78,10 @@
                 var invalidFields = form.find("input,select,textarea").filter(function(i,v) {return !v.validity.valid;}).each( function( index, node ) {
                     markFieldAsError(node);
                 });
+
+                if(invalidFields.length > 0) {
+                    form.get(0).reportValidity();
+                }
             };
 
             // Support Safari
@@ -84,7 +92,7 @@
                 }
             });
 
-            $("input[type=submit], button:not([type=button])", form ).on("click", showAllErrorMessages);
+            $("#continue-button", form).on("click", showAllErrorMessages);
 
             $("input", form).on("keypress", function(event) {
                 var type = $(this).attr("type");
@@ -126,6 +134,16 @@
             }
         };
 
+        var setConfirmButtonText = function(method) {
+            var customTextContainer = method.find('.custom-button-text');
+            var button = $('#continue-button');
+            var defaultText = button.attr('data-default-text');
+            if(customTextContainer.length === 1) {
+                button.text(customTextContainer.attr('data-button-text'));
+            } else if(defaultText) {
+                button.text(defaultText);
+            }
+        };
 
         var paymentMethod = $('input[name=paymentMethod]');
         if(paymentMethod.length > 1) {
@@ -136,7 +154,10 @@
                 var method = $(this).attr('data-payment-method');
                 $('.payment-method-detail').hide();
                 $('#payment-method-'+method).show();
+                setConfirmButtonText($(this).parent());
             });
+        } else if(paymentMethod.length === 1) {
+            setConfirmButtonText($(paymentMethod[0]).parent());
         }
 
         window.recaptchaLoadCallback = function() {
@@ -152,6 +173,20 @@
         };
 
         var btn = $('#continue-button');
+        var registerUnloadHook = function() {
+            console.log("warn on page reload: on");
+            // source: https://developer.mozilla.org/en-US/docs/Web/API/WindowEventHandlers/onbeforeunload
+            window.onbeforeunload = function (e) {
+                // Cancel the event
+                e.preventDefault();
+                // Chrome requires returnValue to be set
+                e.returnValue = '';
+            };
+        };
+        var unregisterHook = function() {
+            console.log("warn on page reload: off");
+            window.onbeforeunload = null;
+        };
         btn.on('click', function(e) {
             var $form = $('#payment-form');
             if($form.length === 0 || !$form.get(0).checkValidity()) {
@@ -163,14 +198,25 @@
             }
             var filteredHandlers = paymentHandlers.filter(function(ph) {return ph.id === selectedPaymentMethod.val() && ph.active(); });
             var paymentHandler = filteredHandlers ? filteredHandlers[0] : null;
-            if(paymentHandler) {
-                btn.hide();
+            if(paymentHandler && paymentHandler.valid()) {
+                registerUnloadHook();
+                var chargeFailedAlert = $('#charge-failed-alert');
+                $('#confirm-buttons').addClass('hidden');
+                $('#wait-message').removeClass('hidden');
+                chargeFailedAlert.addClass('hide');
                 paymentHandler.pay(function(res) {
+                    unregisterHook();
                     if(res) {
                         $form.submit();
                     }
-                }, function() {
-                    btn.show();
+                }, function(errorMessage) {
+                    unregisterHook();
+                    $('#confirm-buttons').removeClass('hidden');
+                    $('#wait-message').addClass('hidden');
+                    if(errorMessage && errorMessage.trim() !== '') {
+                        chargeFailedAlert.removeClass('hide');
+                        chargeFailedAlert.find('#charge-failed-msg').text(errorMessage);
+                    }
                 });
             }
             e.preventDefault();

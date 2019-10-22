@@ -19,10 +19,7 @@ package alfio.controller;
 import alfio.controller.api.support.TicketHelper;
 import alfio.controller.support.TemplateProcessor;
 import alfio.controller.support.TicketDecorator;
-import alfio.manager.EventManager;
-import alfio.manager.FileUploadManager;
-import alfio.manager.NotificationManager;
-import alfio.manager.TicketReservationManager;
+import alfio.manager.*;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.Event;
 import alfio.model.Ticket;
@@ -32,12 +29,10 @@ import alfio.model.system.Configuration;
 import alfio.model.transaction.PaymentProxy;
 import alfio.model.user.Organization;
 import alfio.repository.TicketCategoryRepository;
-import alfio.repository.TicketFieldRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.util.ImageUtil;
 import alfio.util.LocaleUtil;
 import alfio.util.TemplateManager;
-import com.google.zxing.WriterException;
 import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.commons.lang3.tuple.Triple;
@@ -53,6 +48,7 @@ import java.util.Locale;
 import java.util.Optional;
 
 import static alfio.model.system.ConfigurationKeys.ALLOW_FREE_TICKETS_CANCELLATION;
+import static alfio.model.system.ConfigurationKeys.ENABLE_TICKET_TRANSFER;
 
 @Controller
 @RequiredArgsConstructor
@@ -67,7 +63,7 @@ public class TicketController {
     private final ConfigurationManager configurationManager;
     private final FileUploadManager fileUploadManager;
     private final TicketHelper ticketHelper;
-    private final TicketFieldRepository ticketFieldRepository;
+    private final ExtensionManager extensionManager;
 
     @RequestMapping(value = "/event/{eventName}/reservation/{reservationId}/{ticketIdentifier}", method = RequestMethod.GET)
     public String showTicketOLD(@PathVariable("eventName") String eventName, @PathVariable("reservationId") String reservationId,
@@ -109,25 +105,25 @@ public class TicketController {
             @PathVariable("ticketIdentifier") String ticketIdentifier, Model model, Locale locale) {
 
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
-        if(!oData.isPresent()) {
+        if(oData.isEmpty()) {
             return "redirect:/event/" + eventName;
         }
         Triple<Event, TicketReservation, Ticket> data = oData.get();
         Event event = data.getLeft();
         TicketCategory ticketCategory = ticketCategoryRepository.getByIdAndActive(data.getRight().getCategoryId(), event.getId());
         Organization organization = organizationRepository.getById(event.getOrganizationId());
-
         boolean enableFreeCancellation = configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ticketCategory.getId(), ALLOW_FREE_TICKETS_CANCELLATION), false);
         Ticket ticket = data.getRight();
         model.addAttribute("ticketAndCategory", Pair.of(eventManager.getTicketCategoryById(ticket.getCategoryId(), event.getId()), new TicketDecorator(ticket, enableFreeCancellation, eventManager.checkTicketCancellationPrerequisites().apply(ticket), "ticket/"+ticket.getUuid()+"/view", ticketHelper.findTicketFieldConfigurationAndValue(ticket), true, "")))//
                 .addAttribute("reservation", data.getMiddle())//
-                .addAttribute("reservationId", ticketReservationManager.getShortReservationID(event, data.getMiddle().getId()))
+                .addAttribute("reservationId", ticketReservationManager.getShortReservationID(event, data.getMiddle()))
                 .addAttribute("event", event)//
                 .addAttribute("ticketCategory", ticketCategory)//
                 .addAttribute("countries", TicketHelper.getLocalizedCountries(locale))
                 .addAttribute("organization", organization)//
                 .addAttribute("pageTitle", "show-ticket.header.title")
-                .addAttribute("useFirstAndLastName", event.mustUseFirstAndLastName());
+                .addAttribute("useFirstAndLastName", event.mustUseFirstAndLastName())
+                .addAttribute("transferEnabled", configurationManager.getBooleanConfigValue(Configuration.from(event).apply(ENABLE_TICKET_TRANSFER), true) && !ticket.getLockedAssignment());
 
         return "/event/update-ticket";
     }
@@ -137,17 +133,17 @@ public class TicketController {
     @ResponseBody
     public String sendTicketByEmail(@PathVariable("eventName") String eventName,
                                     @PathVariable("ticketIdentifier") String ticketIdentifier,
-                                    HttpServletRequest request) throws Exception {
+                                    HttpServletRequest request) {
 
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
-        if(!oData.isPresent()) {
+        if(oData.isEmpty()) {
             return "redirect:/event/" + eventName;
         }
         internalSendTicketByEmail(request, oData.get());
         return "OK";
     }
 
-    private Ticket internalSendTicketByEmail(HttpServletRequest request, Triple<Event, TicketReservation, Ticket> data) throws IOException {
+    private Ticket internalSendTicketByEmail(HttpServletRequest request, Triple<Event, TicketReservation, Ticket> data) {
         Ticket ticket = data.getRight();
         Event event = data.getLeft();
         Locale locale = LocaleUtil.getTicketLanguage(ticket, request);
@@ -163,10 +159,10 @@ public class TicketController {
 
     @RequestMapping(value = "/event/{eventName}/ticket/{ticketIdentifier}/download-ticket", method = RequestMethod.GET)
     public void generateTicketPdf(@PathVariable("eventName") String eventName,
-            @PathVariable("ticketIdentifier") String ticketIdentifier, HttpServletRequest request, HttpServletResponse response) throws IOException, WriterException {
+            @PathVariable("ticketIdentifier") String ticketIdentifier, HttpServletRequest request, HttpServletResponse response) throws IOException {
 
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
-        if(!oData.isPresent()) {
+        if(oData.isEmpty()) {
             response.sendError(HttpServletResponse.SC_FORBIDDEN);
             return;
         }
@@ -181,20 +177,20 @@ public class TicketController {
         try (OutputStream os = response.getOutputStream()) {
             TicketCategory ticketCategory = ticketCategoryRepository.getByIdAndActive(ticket.getCategoryId(), event.getId());
             Organization organization = organizationRepository.getById(event.getOrganizationId());
-            String reservationID = ticketReservationManager.getShortReservationID(event, ticketReservation.getId());
+            String reservationID = ticketReservationManager.getShortReservationID(event, ticketReservation);
             TemplateProcessor.renderPDFTicket(LocaleUtil.getTicketLanguage(ticket, request), event, ticketReservation,
                 ticket, ticketCategory, organization,
                 templateManager, fileUploadManager,
-                reservationID, os, ticketHelper.buildRetrieveFieldValuesFunction());
+                reservationID, os, ticketHelper.buildRetrieveFieldValuesFunction(), extensionManager);
         }
     }
     
     @RequestMapping(value = "/event/{eventName}/ticket/{ticketIdentifier}/code.png", method = RequestMethod.GET)
     public void generateTicketCode(@PathVariable("eventName") String eventName,
-            @PathVariable("ticketIdentifier") String ticketIdentifier, HttpServletResponse response) throws IOException, WriterException {
+            @PathVariable("ticketIdentifier") String ticketIdentifier, HttpServletResponse response) throws IOException {
         
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
-        if(!oData.isPresent()) {
+        if(oData.isEmpty()) {
             response.sendError(HttpServletResponse.SC_FORBIDDEN);
             return;
         }
@@ -221,7 +217,7 @@ public class TicketController {
 
     private String internalShowTicket(String eventName, String ticketIdentifier, boolean ticketEmailSent, Model model, String backSuffix, Locale locale) {
         Optional<Triple<Event, TicketReservation, Ticket>> oData = ticketReservationManager.fetchCompleteAndAssigned(eventName, ticketIdentifier);
-        if(!oData.isPresent()) {
+        if(oData.isEmpty()) {
             return "redirect:/event/" + eventName;
         }
         Triple<Event, TicketReservation, Ticket> data = oData.get();
@@ -238,7 +234,7 @@ public class TicketController {
             .addAttribute("ticketCategory", ticketCategory)//
             .addAttribute("organization", organization)//
             .addAttribute("ticketEmailSent", ticketEmailSent)
-            .addAttribute("reservationId", ticketReservationManager.getShortReservationID(event, reservation.getId()))
+            .addAttribute("reservationId", ticketReservationManager.getShortReservationID(event, reservation))
             .addAttribute("deskPaymentRequired", Optional.ofNullable(reservation.getPaymentMethod()).orElse(PaymentProxy.STRIPE).isDeskPaymentRequired())
             .addAttribute("backSuffix", backSuffix)
             .addAttribute("userLanguage", locale.getLanguage())

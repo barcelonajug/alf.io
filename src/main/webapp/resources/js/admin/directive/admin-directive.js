@@ -248,7 +248,8 @@
             templateUrl: '/resources/angular-templates/admin/partials/form/control-buttons.html',
             scope: {
                 formObj: '=',
-                cancelHandler: '='
+                cancelHandler: '=',
+                disableSubmit:'<'
             },
             link: function(scope, element, attrs) {
                 scope.successText = angular.isDefined(attrs.successText) ? attrs.successText : "Save";
@@ -333,6 +334,10 @@
                         date: endDateTime.format('YYYY-MM-DD'),
                         time: endDateTime.format('HH:mm')
                     };
+
+                    if(!$scope.obj.geolocation) {
+                        $scope.obj.geolocation = {timeZone: $scope.eventObj.timeZone, latitude: $scope.eventObj.latitude, longitude: $scope.eventObj.longitude};
+                    }
                 }
 
                 LocationService.getTimezones().then(function(res) {
@@ -392,7 +397,10 @@
                     $scope.loadingMap = true;
                     LocationService.clientGeolocate(location).then(function(result) {
                         delete $scope['mapError'];
-                        $scope.obj['geolocation'] = result;
+
+                        if(result.latitude !== null && result.longitude !== null) {
+                            $scope.obj['geolocation'] = result;
+                        }
                         $scope.loadingMap = false;
                     }, function(e) {
                         $scope.mapError = e;
@@ -585,6 +593,25 @@
                 };
 
                 $scope.advancedOptionsCollapsed = !hasCustomCheckIn($scope.ticketCategory) && !hasCustomTicketValidity($scope.ticketCategory);
+
+                $scope.checkInStrategiesVisible = function() {
+                    var event = $scope.event;
+                    if(event.begin.date && event.end.date) {
+                        return moment(event.end.date).diff(moment(event.begin.date), 'days') > 0;
+                    }
+                    return moment(event.end).endOf('day').diff(moment(event.begin).startOf('day'), 'days') > 0;
+                };
+
+                $scope.checkInStrategies = [
+                    {
+                        id: 'ONCE_PER_EVENT',
+                        name: 'Only upon first access to the venue'
+                    },
+                    {
+                        id: 'ONCE_PER_DAY',
+                        name: 'Once per day'
+                    }
+                ];
             }
         };
     });
@@ -776,7 +803,7 @@
                 });
                 ctrl.styleClass = ctrl.styleClass || 'btn btn-warning';
             },
-            template: '<a data-ng-class="ctrl.styleClass" data-ui-sref="events.single.show-waiting-queue({eventName: ctrl.eventName})"><i class="fa fa-group" ng-if="!ctrl.justCount"></i> <span ng-class="{\'sr-only\': ctrl.justCount}">Waiting queue</span> <span ng-class="{\'badge\': !ctrl.justCount}">{{ctrl.count}}</span></a>'
+            template: '<a data-ng-class="ctrl.styleClass" data-ui-sref="events.single.show-waiting-queue({eventName: ctrl.eventName})"><i class="fa fa-group" ng-if="!ctrl.justCount"></i> <span ng-class="{\'sr-only\': ctrl.justCount}">Waiting list</span> <span ng-class="{\'badge\': !ctrl.justCount}">{{ctrl.count}}</span></a>'
         }
     });
 
@@ -869,14 +896,14 @@
         }
     }]);
 
-    directives.directive('alfioSidebar', ['EventService', 'UtilsService', '$state', '$window', '$rootScope', function(EventService, UtilsService, $state, $window, $rootScope) {
+    directives.directive('alfioSidebar', ['EventService', 'OrganizationService', 'UtilsService', 'ConfigurationService', '$state', '$window', '$rootScope', function(EventService, OrganizationService, UtilsService, ConfigurationService, $state, $window, $rootScope) {
         return {
             restrict: 'E',
             bindToController: true,
             scope: {},
             controllerAs: 'ctrl',
             templateUrl: '/resources/angular-templates/admin/partials/main/sidebar.html',
-            controller: ['$location', '$anchorScroll', '$scope', 'NotificationHandler', function($location, $anchorScroll, $scope, NotificationHandler) {
+            controller: ['$location', '$anchorScroll', '$scope', 'NotificationHandler', '$uibModal', function($location, $anchorScroll, $scope, NotificationHandler, $uibModal) {
                 var ctrl = this;
                 var toUnbind = [];
                 var detectCurrentView = function(state) {
@@ -888,6 +915,10 @@
                 var loadEventData = function() {
                     if(ctrl.displayEventData && $state.params.eventName) {
                         EventService.getEvent($state.params.eventName).success(function(event) {
+                            ConfigurationService.loadSingleConfigForEvent(event.event.id, 'USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL')
+                                .then(function(result) {
+                                    ctrl.promoCodeDescription = (result.data === 'true') ? 'Partner' : 'Promo';
+                                });
                             ctrl.event = event.event;
                             ctrl.internal = (ctrl.event.type === 'INTERNAL');
                             ctrl.owner = ctrl.event.visibleForCurrentUser;
@@ -910,6 +941,32 @@
                                     pathName = pathName + "/";
                                 }
                                 $window.open(pathName+"api/events/"+ctrl.event.shortName+"/sponsor-scan/export");
+                            };
+                            ctrl.openWaitingQueueModal = function() {
+                                var modal = $uibModal.open({
+                                    size:'lg',
+                                    templateUrl: '/resources/angular-templates/admin/partials/event/fragment/download-waiting-queue.html',
+                                    backdrop: 'static',
+                                    controllerAs: 'ctrl',
+                                    controller: function($scope) {
+                                        var outCtrl = ctrl;
+                                        var ctrl = this;
+                                        $scope.format = 'excel';
+
+                                        $scope.download = function() {
+                                            var queryString = "format="+$scope.format;
+                                            var pathName = $window.location.pathname;
+                                            if(!pathName.endsWith("/")) {
+                                                pathName = pathName + "/";
+                                            }
+                                            $window.open(pathName+"api/event/" + event.event.shortName + "/waiting-queue/download?"+queryString);
+                                        }
+
+                                        ctrl.close = function() {
+                                            modal.close();
+                                        }
+                                    }
+                                });
                             };
                             ctrl.downloadInvoices = function() {
                                 EventService.countInvoices(ctrl.event.shortName).then(function (res) {
@@ -953,6 +1010,39 @@
                 ctrl.isDetail = ctrl.currentView === 'EVENT_DETAIL';
                 ctrl.displayEventData = $state.current.data && $state.current.data.displayEventData;
                 loadEventData();
+                var displayConfiguration = function() {
+
+                    ConfigurationService.loadCurrentConfigurationContext(OrganizationService, EventService).then(function(res) {
+                        ctrl.organizations = res.organizations;
+                        ctrl.settingCategories = [
+                            {
+                                id: 'GENERAL',
+                                name: 'General'
+                            },
+                            {
+                                id: 'RESERVATION_UI',
+                                name: 'Reservation UI'
+                            },
+                            {
+                                id: 'WAITING_LIST',
+                                name: 'Waiting List'
+                            },
+                            {
+                                id: 'MAIL',
+                                name: 'E-Mail'
+                            },
+                            {
+                                id: 'INVOICE',
+                                name: 'Invoice'
+                            },
+                            {
+                                id: 'PAYMENT',
+                                name: 'Payment'
+                            }
+                        ];
+                    });
+                };
+
                 toUnbind.push($rootScope.$on('$stateChangeSuccess', function(event, toState, toParams, fromState, fromParams) {
                     ctrl.currentView = detectCurrentView(toState);
                     ctrl.isDetail = ctrl.currentView === 'EVENT_DETAIL';
@@ -961,15 +1051,18 @@
                     if(!ctrl.displayEventData) {
                         delete ctrl.event;
                     }
+                    if(ctrl.isConfiguration()) {
+                        displayConfiguration();
+                    }
                 }));
 
                 ctrl.isConfiguration = function() {
                     return ctrl.currentView === 'CONFIGURATION';
                 };
 
-                toUnbind.push($rootScope.$on('ConfigurationMenuLoaded', function(e, organizations) {
-                    ctrl.organizations = organizations;
-                }));
+                if(ctrl.isConfiguration()) {
+                    displayConfiguration();
+                }
 
                 ctrl.navigateTo = function(id) {
                     //thanks to http://stackoverflow.com/a/14717011

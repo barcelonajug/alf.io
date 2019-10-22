@@ -16,12 +16,11 @@
  */
 package alfio.controller.form;
 
-import alfio.manager.EuVatChecker;
-import alfio.model.Event;
-import alfio.model.TicketFieldConfiguration;
-import alfio.model.TicketReservation;
-import alfio.model.TicketReservationAdditionalInfo;
+import alfio.manager.SameCountryValidator;
+import alfio.model.*;
+import alfio.model.TicketReservationInvoicingAdditionalInfo.ItalianEInvoicing;
 import alfio.model.result.ValidationResult;
+import alfio.model.system.ConfigurationKeys;
 import alfio.util.ErrorsCode;
 import alfio.util.Validator;
 import lombok.Data;
@@ -34,6 +33,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static alfio.util.ErrorsCode.STEP_2_INVALID_VAT;
@@ -65,8 +65,17 @@ public class ContactAndTicketsForm implements Serializable {
     private String billingAddressZip;
     private String billingAddressCity;
 
+    private Boolean addCompanyBillingDetails;
     private Boolean skipVatNr;
     private Boolean backFromOverview;
+    //
+
+    // https://github.com/alfio-event/alf.io/issues/573
+    private String italyEInvoicingFiscalCode;
+    private ItalianEInvoicing.ReferenceType italyEInvoicingReferenceType;
+    private String italyEInvoicingReferenceAddresseeCode;
+    private String italyEInvoicingReferencePEC;
+    //
 
     private static void rejectIfOverLength(BindingResult bindingResult, String field, String errorCode,
             String value, int maxLength) {
@@ -77,7 +86,7 @@ public class ContactAndTicketsForm implements Serializable {
 
 
 
-    public void validate(BindingResult bindingResult, Event event, List<TicketFieldConfiguration> fieldConf, EuVatChecker.SameCountryValidator vatValidator) {
+    public void validate(BindingResult bindingResult, Event event, List<TicketFieldConfiguration> fieldConf, SameCountryValidator vatValidator, Map<ConfigurationKeys, Boolean> formValidationParameters, Function<String, Integer> fromTicketUUIDToTicketCategoryId) {
 
 
         
@@ -129,6 +138,37 @@ public class ContactAndTicketsForm implements Serializable {
 
         }
 
+        // https://github.com/alfio-event/alf.io/issues/573
+        // only for IT and only if enabled!
+        if (formValidationParameters.getOrDefault(ConfigurationKeys.ENABLE_ITALY_E_INVOICING, false) && "IT".equals(vatCountryCode)) {
+
+            // mandatory
+            ValidationUtils.rejectIfEmpty(bindingResult, "italyEInvoicingFiscalCode", "error.emptyField");
+            rejectIfOverLength(bindingResult, "italyEInvoicingFiscalCode", "error.tooLong", italyEInvoicingFiscalCode, 256);
+            //
+
+            //
+            ValidationUtils.rejectIfEmpty(bindingResult, "italyEInvoicingReferenceType", "error.italyEInvoicingReferenceTypeSelectValue");
+            //
+            if (ItalianEInvoicing.ReferenceType.ADDRESSEE_CODE == italyEInvoicingReferenceType) {
+                ValidationUtils.rejectIfEmpty(bindingResult, "italyEInvoicingReferenceAddresseeCode", "error.emptyField");
+                italyEInvoicingReferenceAddresseeCode = StringUtils.trim(italyEInvoicingReferenceAddresseeCode);
+                if (italyEInvoicingReferenceAddresseeCode != null) {
+                    if (italyEInvoicingReferenceAddresseeCode.length() != 7) {
+                        bindingResult.rejectValue("italyEInvoicingReferenceAddresseeCode", "error.lengthMustBe7");
+                    }
+
+                    if (!StringUtils.isAlphanumeric(italyEInvoicingReferenceAddresseeCode)) {
+                        bindingResult.rejectValue("italyEInvoicingReferenceAddresseeCode", "error.alphanumeric");
+                    }
+                }
+            }
+            if (ItalianEInvoicing.ReferenceType.PEC == italyEInvoicingReferenceType) {
+                ValidationUtils.rejectIfEmpty(bindingResult, "italyEInvoicingReferencePEC", "error.emptyField");
+            }
+
+        }
+
         if (email != null && !email.contains("@") && !bindingResult.hasFieldErrors("email")) {
             bindingResult.rejectValue("email", ErrorsCode.STEP_2_INVALID_EMAIL);
         }
@@ -137,7 +177,7 @@ public class ContactAndTicketsForm implements Serializable {
             Optional<List<ValidationResult>> validationResults = Optional.ofNullable(tickets)
                 .filter(m -> !m.isEmpty())
                 .map(m -> m.entrySet().stream().map(e -> Validator.validateTicketAssignment(e.getValue(),
-                    fieldConf, Optional.of(bindingResult), event, "tickets[" + e.getKey() + "]", vatValidator)))
+                    fieldConf, Optional.of(bindingResult), event, "tickets[" + e.getKey() + "]", vatValidator, fromTicketUUIDToTicketCategoryId.apply(e.getKey()))))
                 .map(s -> s.collect(Collectors.toList()));
 
             boolean success = validationResults
@@ -176,7 +216,19 @@ public class ContactAndTicketsForm implements Serializable {
         form.setBillingAddressLine2(additionalInfo.getBillingAddressLine2());
         form.setBillingAddressZip(additionalInfo.getBillingAddressZip());
         form.setBillingAddressCity(additionalInfo.getBillingAddressCity());
+        form.setAddCompanyBillingDetails(additionalInfo.getAddCompanyBillingDetails());
         form.setSkipVatNr(additionalInfo.getSkipVatNr());
+
+        //https://github.com/alfio-event/alf.io/issues/573
+        Optional.ofNullable(additionalInfo.getInvoicingAdditionalInfo())
+            .map(TicketReservationInvoicingAdditionalInfo::getItalianEInvoicing)
+            .ifPresent(iei -> {
+                form.setItalyEInvoicingFiscalCode(iei.getFiscalCode());
+                form.setItalyEInvoicingReferenceType(iei.getReferenceType());
+                form.setItalyEInvoicingReferenceAddresseeCode(iei.getAddresseeCode());
+                form.setItalyEInvoicingReferencePEC(iei.getPec());
+            });
+
         return form;
     }
 
@@ -185,14 +237,32 @@ public class ContactAndTicketsForm implements Serializable {
     }
 
     public boolean isBackFromOverview() {
-        return Optional.ofNullable(backFromOverview).orElse(false);
+        return Boolean.TRUE.equals(backFromOverview);
     }
 
     public boolean canSkipVatNrCheck() {
-        return Optional.ofNullable(skipVatNr).orElse(false);
+        return Boolean.TRUE.equals(skipVatNr);
     }
 
     public boolean isBusiness() {
-        return StringUtils.isNotBlank(billingAddressCompany) && !canSkipVatNrCheck() && invoiceRequested;
+        return getAddCompanyBillingDetails() && !canSkipVatNrCheck() && invoiceRequested;
+    }
+
+    // https://github.com/alfio-event/alf.io/issues/573
+    public boolean getItalyEInvoicingTypeAddresseeCode() {
+        return italyEInvoicingReferenceType == ItalianEInvoicing.ReferenceType.ADDRESSEE_CODE;
+    }
+
+    public boolean getItalyEInvoicingTypePEC() {
+        return italyEInvoicingReferenceType == ItalianEInvoicing.ReferenceType.PEC;
+    }
+
+    public boolean getItalyEInvoicingTypeNone() {
+        return italyEInvoicingReferenceType == ItalianEInvoicing.ReferenceType.NONE;
+    }
+    //
+
+    public boolean getAddCompanyBillingDetails() {
+        return Boolean.TRUE.equals(addCompanyBillingDetails);
     }
 }

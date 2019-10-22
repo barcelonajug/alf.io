@@ -10,19 +10,19 @@
 
 <div class="wizard2 center text-muted">
     <div>
-        <div><span class="badge badge-success">1</span><span>{{#i18n}}breadcrumb.step1{{/i18n}}</span></div>
+        <div><span class="badge badge-success"><i class="fa fa-check"></i></span><span>{{#i18n}}breadcrumb.step1{{/i18n}}</span></div>
         <div class="wizard2-line"></div>
     </div>
     <div class="wizard2-current">
-        <div><span class="badge">2</span><span>{{#i18n}}breadcrumb.step2{{/i18n}}</span></div>
+        <div><span class="badge"><i class="fa fa-drivers-license"></i></span><span>{{#i18n}}breadcrumb.step2{{/i18n}}</span></div>
         <div class="wizard2-line"></div>
     </div>
     <div>
-        <div><span class="badge">3</span><span>{{#i18n}}breadcrumb.step3{{#event.free}}.free{{/event.free}}{{/i18n}}</span></div>
+        <div><span class="badge"><i class="fa {{#event.free}}fa-file-text{{/event.free}}{{^event.free}}fa-money{{/event.free}}"></i></span><span>{{#i18n}}breadcrumb.step3{{#event.free}}.free{{/event.free}}{{/i18n}}</span></div>
         <div class="wizard2-line"></div>
     </div>
     <div>
-        <div><span class="badge">4</span><span>{{#i18n}}breadcrumb.step4{{/i18n}}</span></div>
+        <div><span class="badge"><i class="fa fa-thumbs-up"></i></span><span>{{#i18n}}breadcrumb.step4{{/i18n}}</span></div>
     </div>
 </div>
 
@@ -50,19 +50,6 @@
     <div class="page-header">
         <h2>{{#i18n}}reservation-page.your-details{{/i18n}}</h2>
     </div>
-
-    {{#onlyInvoice}}
-    <div class="row">
-        <div class="col-xs-12">
-            <div class="form-group {{#field-has-error}}[billingAddressCompany] has-error{{/field-has-error}}">
-                <label for="billingAddressCompany" class="control-label">{{#i18n}}reservation-page-complete.company{{/i18n}}</label>
-                <input id="billingAddressCompany" name="billingAddressCompany" class="form-control" type="text" value="{{paymentForm.billingAddressCompany}}" maxlength="255" placeholder="{{#i18n}}reservation-page.if-applicable{{/i18n}}">
-                {{#field-has-error}}[billingAddressCompany]<span class="help-block text-danger">{{#i18n}}{{#field-error}}billingAddressCompany{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
-            </div>
-        </div>
-    </div>
-    {{/onlyInvoice}}
-
 
     {{#useFirstAndLastName}}
     <div class="row">
@@ -103,33 +90,22 @@
 
     {{#onlyInvoice}}
         {{ > /event/invoice-fields }}
+        <input type="hidden" name="invoiceRequested" id="invoice-requested" value="true">
     {{/onlyInvoice}}
     {{^orderSummary.free}}
     {{#invoiceIsAllowed}}
-    {{^onlyInvoice}}
-    <div class="checkbox wMarginTop">
-        <label>
-            <input type="checkbox" name="invoiceRequested" id="invoice-requested" value="true" {{#paymentForm.invoiceRequested}}checked{{/paymentForm.invoiceRequested}}>
-                {{#i18n}}reservation-page.i-need-an-invoice{{/i18n}}
-        </label>
-    </div>
+        {{^onlyInvoice}}
+        <div class="checkbox wMarginTop">
+            <label>
+                <input type="checkbox" name="invoiceRequested" id="invoice-requested" value="true" {{#paymentForm.invoiceRequested}}checked{{/paymentForm.invoiceRequested}}>
+                    {{#i18n}}reservation-page.i-need-an-invoice{{/i18n}}
+            </label>
+        </div>
 
-    <div class="hidden-xs hidden-sm hidden-md hidden-lg invoice-details-section">
-        <div class="page-header">
-            <h2>{{#i18n}}reservation-page.invoice-details{{/i18n}}</h2>
+        <div class="hidden-xs hidden-sm hidden-md hidden-lg invoice-details-section">
+            {{ > /event/invoice-fields }}
         </div>
-        <div class="row">
-            <div class="col-xs-12">
-                <div class="form-group {{#field-has-error}}[billingAddressCompany] has-error{{/field-has-error}}">
-                    <label for="billingAddressCompany" class="control-label">{{#i18n}}reservation-page-complete.company{{/i18n}}</label>
-                    <input id="billingAddressCompany" name="billingAddressCompany" class="form-control" type="text" value="{{paymentForm.billingAddressCompany}}" maxlength="255" placeholder="{{#i18n}}reservation-page.if-applicable{{/i18n}}">
-                    {{#field-has-error}}[billingAddressCompany]<span class="help-block text-danger">{{#i18n}}{{#field-error}}billingAddressCompany{{/field-error}}{{/i18n}}</span>{{/field-has-error}}
-                </div>
-            </div>
-        </div>
-        {{ > /event/invoice-fields }}
-    </div>
-    {{/onlyInvoice}}
+        {{/onlyInvoice}}
     {{/invoiceIsAllowed}}
     {{/orderSummary.free}}
 
@@ -151,8 +127,8 @@
             {{#ticketsByCategory}}
                 {{#value}}
                     <li class="list-group-item">
-                        <h3><i class="fa fa-ticket"></i> {{#i18n}}reservation-page-complete.ticket-nr{{/i18n}}<span class="ticket-counter"></span> <span class="hidden-xs hidden-xs">- <small>{{key.name}}</small></span>{{^attendeeAutocompleteEnabled}}{{#-first}}<button type="button" id="copy-from-contact-data" class="btn btn-xs btn-default tooltip-handler pull-right" title="{{#i18n}}reservation-page.copy-attendee{{/i18n}}"><i class="fa fa-clone"></i><span class="sr-only">{{#i18n}}reservation-page.copy-attendee{{/i18n}}</span></button>{{/-first}}{{/attendeeAutocompleteEnabled}}</h3>
-                        <div class="form-horizontal">
+                        <h3><i class="fa fa-ticket"></i> {{#i18n}}reservation-page-complete.ticket-nr{{/i18n}}<span class="ticket-counter"></span> <span class="hidden-xs hidden-xs">- <small>{{key.name}}</small></span>{{^attendeeAutocompleteEnabled}}{{#-first}}<button type="button" data-ticket="{{uuid}}" class="btn btn-xs btn-default tooltip-handler pull-right copy-from-contact-data" title="{{#i18n}}reservation-page.copy-attendee{{/i18n}}"><i class="fa fa-clone"></i><span class="sr-only">{{#i18n}}reservation-page.copy-attendee{{/i18n}}</span></button>{{/-first}}{{/attendeeAutocompleteEnabled}}</h3>
+                        <div class="form-horizontal" id="attendee-data-{{uuid}}">
                             <div data-collapse-enabled="true" class="collapsible-container">
                                 {{> /event/attendee-fields }}
                             </div>

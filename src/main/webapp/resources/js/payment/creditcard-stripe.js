@@ -14,11 +14,11 @@
                 id: 'STRIPE',
                 pay: function(confirmHandler, cancelHandler) {
                     stripeHandler.open({
-                        name: stripeEl.getAttribute('data-stripe-title'),
+                        name: stripeEl.getAttribute('data-stripe-contact-name'),
                         description: stripeEl.getAttribute('data-stripe-description'),
                         zipCode: false,
                         allowRememberMe: false,
-                        amount: (stripeEl.getAttribute('data-price') || ''),
+                        amount: parseInt(stripeEl.getAttribute('data-price') || '0', 10),
                         currency: stripeEl.getAttribute('data-currency'),
                         email: stripeEl.getAttribute('data-stripe-email')
                     });
@@ -26,6 +26,7 @@
                     closeFn = cancelHandler;
                 },
                 init: function() {
+                    var confirmCalled = false;
                     stripeHandler = StripeCheckout.configure({
                         key: stripeEl.getAttribute('data-stripe-key'),
                         image: doc.getElementById("event-logo").getAttribute('src'),
@@ -34,16 +35,23 @@
                             var $form = $('#payment-form');
                             $form.append($('<input type="hidden" name="gatewayToken" />').val(token.id));
                             confirmFn(true);
+                            confirmCalled = true;
                         },
                         closed: function() {
-                            if(closeFn) {
+                            if(closeFn && !confirmCalled) {
                                 closeFn();
                             }
                         }
                     });
                 },
+                valid: function() {
+                    return true;
+                },
                 active: function() {
-                    return doc.getElementById("stripe-key") != null;
+                    var attr;
+                    var stripe = doc.getElementById("stripe-key");
+                    //checkout is the default
+                    return stripe != null && (attr = stripe.attributes.getNamedItem("data-stripe-embedded")) == null || attr.value === 'false';
                 }
             });
         } else {

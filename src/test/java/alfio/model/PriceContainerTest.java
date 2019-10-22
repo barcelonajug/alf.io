@@ -122,12 +122,23 @@ public class PriceContainerTest {
             });
     }
 
+    @Test
+    void testDoNotProduceNegativePrices() {
+        var discount = mock(PromoCodeDiscount.class);
+        when(discount.getCodeType()).thenReturn(PromoCodeDiscount.CodeType.DISCOUNT);
+        when(discount.getDiscountType()).thenReturn(PromoCodeDiscount.DiscountType.FIXED_AMOUNT);
+        when(discount.getFixedAmount()).thenReturn(true);
+        when(discount.getDiscountAmount()).thenReturn(3100);
+
+        PriceContainerImpl vs = new PriceContainerImpl(1000, "CHF", new BigDecimal("30.00"), PriceContainer.VatStatus.INCLUDED_EXEMPT, discount);
+        assertEquals(new BigDecimal("0.00"), vs.getFinalPrice());
+    }
 
     private Stream<Pair<Integer, PriceContainer>> generateTestStream(PriceContainer.VatStatus vatStatus) {
         List<BigDecimal> vatPercentages = IntStream.range(100, 3000)
             .mapToObj(vatCts -> new BigDecimal(vatCts).divide(new BigDecimal("100.00"), 2, RoundingMode.UNNECESSARY))
             .collect(Collectors.toList());
-        return IntStream.range(1, 500_00).
+        return IntStream.range(1, 5_000).
             parallel()
             .boxed()
             .flatMap(i -> vatPercentages.stream().map(vat -> Pair.of(i, new PriceContainerImpl(i, "CHF", vat, vatStatus))));

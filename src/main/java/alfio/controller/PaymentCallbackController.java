@@ -18,8 +18,8 @@ package alfio.controller;
 
 import alfio.controller.support.SessionUtil;
 import alfio.manager.PaymentManager;
-import alfio.manager.PaymentSpecification;
 import alfio.manager.TicketReservationManager;
+import alfio.manager.payment.PaymentSpecification;
 import alfio.manager.support.PaymentResult;
 import alfio.model.Event;
 import alfio.model.OrderSummary;
@@ -85,7 +85,7 @@ public class PaymentCallbackController {
                     .filter(ExternalProcessing.class::isInstance)
                     .map(provider -> {
                         TotalPrice reservationCost = ticketReservationManager.totalReservationCostWithVAT(reservationId);
-                        OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event, Locale.forLanguageTag(reservation.getUserLanguage()));
+                        OrderSummary orderSummary = ticketReservationManager.orderSummaryForReservationId(reservationId, event);
                         PaymentSpecification paymentSpecification = ((ExternalProcessing)provider).getSpecificationFromRequest(event, reservation, reservationCost, orderSummary).apply(requestParams);
 
                         PaymentResult paymentResult = ticketReservationManager.performPayment(paymentSpecification,

@@ -11,12 +11,12 @@
         <h1>System configuration</h1>
     </div>
 
-    <div class="page-header">
-        <h2>General</h2>
-        <span>General settings</span>
-    </div>
 
     <form name="settingsForm" novalidate data-ng-submit="systemConf.saveSettings(settingsForm)">
+        <div class="page-header" id="GENERAL">
+            <h2>General</h2>
+            <span>General settings</span>
+        </div>
         <div data-ng-if="systemConf.general">
             <div class="form-group">
                 <label>Supported translations</label>
@@ -31,7 +31,7 @@
             </div>
         </div>
 
-        <div class="page-header">
+        <div class="page-header" id="RESERVATION_UI">
             <h2>Reservation Process</h2>
             <span>Customizations for the public-facing reservation process</span>
         </div>
@@ -41,7 +41,27 @@
             </div>
         </div>
 
-        <div class="page-header">
+        <div class="page-header" id="PASS_INTEGRATION">
+            <h2>Pass Integration</h2>
+            <span>Integration with Apple (tm) Pass</span>
+        </div>
+        <div>
+            <div data-ng-repeat="setting in systemConf.passIntegration.settings">
+                <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+            </div>
+        </div>
+
+        <div class="page-header" id="WAITING_LIST">
+            <h2>Waiting List</h2>
+            <span>Waiting List configuration</span>
+        </div>
+        <div>
+            <div data-ng-repeat="setting in systemConf.waitingList.settings">
+                <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+            </div>
+        </div>
+
+        <div class="page-header" id="MAIL">
             <h2>E-Mail</h2>
             <span>E-Mail settings</span>
         </div>
@@ -93,11 +113,17 @@
             </div>
         </div>
 
-        <div class="page-header">
+        <div class="page-header" id="MAP">
             <h2>Map</h2>
             <span>Map settings</span>
         </div>
         <div>
+            <p class="radio-inline">
+                <label>
+                    <input type="radio" name="map.mapsProvider" data-ng-model="systemConf.map['MAPS_PROVIDER'].value" data-ng-value="'NONE'">
+                    None
+                </label>
+            </p>
             <p class="radio-inline">
                 <label>
                     <input type="radio" name="map.mapsProvider" data-ng-model="systemConf.map['MAPS_PROVIDER'].value" data-ng-value="'GOOGLE'">
@@ -110,20 +136,22 @@
                     Here maps
                 </label>
             </p>
-            <div>
+            <div ng-if="systemConf.map['MAPS_PROVIDER'].value === 'GOOGLE'">
                 <setting data-obj="systemConf.map['MAPS_CLIENT_API_KEY']" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"  ></setting>
             </div>
-            <div>
-                <setting data-obj="systemConf.map['MAPS_HERE_APP_ID']" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"  ></setting>
-            </div>
-            <div>
-                <setting data-obj="systemConf.map['MAPS_HERE_APP_CODE']" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"  ></setting>
+            <div ng-if="systemConf.map['MAPS_PROVIDER'].value === 'HERE'">
+                <div>
+                    <setting data-obj="systemConf.map['MAPS_HERE_APP_ID']" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"  ></setting>
+                </div>
+                <div>
+                    <setting data-obj="systemConf.map['MAPS_HERE_APP_CODE']" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"  ></setting>
+                </div>
             </div>
         </div>
 
 
-        <div class="page-header">
-            <h2>Invoice settings</h2>
+        <div class="page-header" id="INVOICE">
+            <h2>Invoice</h2>
         </div>
         <div>
             <div data-ng-repeat="setting in systemConf.settings.INVOICE">
@@ -142,7 +170,7 @@
         </div>
 
 
-        <div class="page-header" data-ng-if="systemConf.payment || systemConf.paymentPaypal || systemConf.paymentStripe || systemConf.paymentMollie || systemConf.paymentOffline">
+        <div class="page-header" id="PAYMENT" data-ng-if="systemConf.payment || systemConf.paymentPaypal || systemConf.paymentStripe || systemConf.paymentMollie || systemConf.paymentOffline">
             <h2>Payment</h2>
             <span>Payment provider settings</span>
         </div>
@@ -209,9 +237,25 @@
                 <div class="alert alert-info">
                     <p><i class="fa fa-info-circle"></i> In order to be able to accept offline payments, you must fill your <strong>Bank Account</strong> data.</p>
                 </div>
-                <div data-ng-repeat="setting in systemConf.paymentOffline.settings">
+                <div data-ng-repeat="setting in systemConf.paymentOffline.settings | filter: '!REVOLUT'">
                     <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
                 </div>
+                <div class="page-header">
+                    <h3>Revolut integration</h3>
+                </div>
+                <p>If the IBAN above is actually a Revolut Bank Account, you can enable the integration in order to check incoming payments automatically and flag the reservations as complete once the due amount has been received.</p>
+                <div data-ng-repeat="setting in systemConf.paymentOffline.settings | filter: 'REVOLUT'">
+                    <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
+                </div>
+            </div>
+        </div>
+
+        <div class="page-header">
+            <h2>Import Attendees</h2>
+        </div>
+        <div>
+            <div data-ng-repeat="setting in systemConf.importAttendee.settings">
+                <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
             </div>
         </div>
 
@@ -239,7 +283,7 @@
             </div>
             <div class="panel-body">
                 <div class="alert alert-info">
-                    <p><i class="fa fa-info-circle"></i> See <a href="https://github.com/exteso/alf.io-PI">Alf.io-PI repository</a> for more information.</p>
+                    <p><i class="fa fa-info-circle"></i> See <a href="https://github.com/alfio-event/alf.io-PI">Alf.io-PI repository</a> for more information.</p>
                 </div>
                 <div data-ng-repeat="setting in systemConf.alfioPiOptions">
                     <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="systemConf.delete(config)"></setting>
@@ -263,6 +307,6 @@
             </div>
         </div>
 
-        <control-buttons data-form-obj="systemConf" data-success-text="Save" data-cancel-handler="Cancel"></control-buttons>
+        <control-buttons data-form-obj="systemConf" data-success-text="Save" data-cancel-handler="systemConf.cancel"></control-buttons>
     </form>
 </div>

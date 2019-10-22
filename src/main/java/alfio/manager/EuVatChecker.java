@@ -17,7 +17,8 @@
 package alfio.manager;
 
 import alfio.manager.system.ConfigurationManager;
-import alfio.model.Event;
+import alfio.model.Audit;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.VatDetail;
 import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
@@ -26,31 +27,28 @@ import ch.digitalfondue.vatchecker.EUVatCheckResponse;
 import ch.digitalfondue.vatchecker.EUVatChecker;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import lombok.RequiredArgsConstructor;
+import lombok.AllArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.stereotype.Component;
 
 import java.util.Date;
-import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 import static alfio.model.Audit.EntityType.RESERVATION;
-import static alfio.model.Audit.EventType.VAT_FORMAL_VALIDATION_SUCCESSFUL;
-import static alfio.model.Audit.EventType.VAT_VALIDATION_SUCCESSFUL;
+import static alfio.model.Audit.EventType.*;
 import static alfio.model.system.Configuration.getSystemConfiguration;
 import static alfio.model.system.ConfigurationKeys.APPLY_VAT_FOREIGN_BUSINESS;
-import static java.util.Collections.singletonList;
 
 @Component
 @Log4j2
-@RequiredArgsConstructor
+@AllArgsConstructor
 public class EuVatChecker {
 
     private final ConfigurationManager configurationManager;
@@ -62,17 +60,17 @@ public class EuVatChecker {
         .expireAfterWrite(15, TimeUnit.MINUTES)
         .build();
 
-    public boolean isVatCheckingEnabledFor(int organizationId) {
-        return reverseChargeEnabled(configurationManager, organizationId) && validationEnabled(configurationManager, organizationId);
+    public boolean isReverseChargeEnabledFor(int organizationId) {
+        return reverseChargeEnabled(configurationManager, organizationId);
     }
 
-    public Optional<VatDetail> checkVat(String vatNr, String countryCode, Event event) {
+    public Optional<VatDetail> checkVat(String vatNr, String countryCode, EventAndOrganizationId event) {
         Optional<VatDetail> res = performCheck(vatNr, countryCode, event.getOrganizationId()).apply(configurationManager, client);
         res.map(detail -> {
            if(!detail.isValid()) {
                String organizerCountry = organizerCountry(configurationManager, event.getOrganizationId());
                boolean valid = extensionManager.handleTaxIdValidation(event.getId(), vatNr, organizerCountry);
-               return new VatDetail(detail.getVatNr(), detail.getCountry(), valid, detail.getName(), detail.getAddress(), false);
+               return new VatDetail(detail.getVatNr(), detail.getCountry(), valid, detail.getName(), detail.getAddress(), VatDetail.Type.FORMAL, false);
            } else {
                return detail;
            }
@@ -93,19 +91,47 @@ public class EuVatChecker {
 
             boolean euCountryCode = configurationManager.getRequiredValue(getSystemConfiguration(ConfigurationKeys.EU_COUNTRIES_LIST)).contains(countryCode);
 
-            if(euCountryCode && validationEnabled(configurationManager, organizationId)) {
+            boolean validationEnabled = validationEnabled(configurationManager, organizationId);
+            if(euCountryCode && validationEnabled) {
                 EUVatCheckResponse validationResult = validateEUVat(vatNr, countryCode, client);
                 return Optional.ofNullable(validationResult)
                     .map(r -> getVatDetail(reverseChargeEnabled(configurationManager, organizationId), r, vatNr, countryCode, organizerCountry(configurationManager, organizationId)));
-            } else {
-                String organizerCountry = organizerCountry(configurationManager, organizationId);
-                Supplier<Boolean> applyVatToForeignBusiness = () -> configurationManager.getBooleanConfigValue(Configuration.from(organizationId, APPLY_VAT_FOREIGN_BUSINESS), true);
-                return Optional.of(new VatDetail(vatNr, countryCode, true, "", "", !organizerCountry.equals(countryCode) && !applyVatToForeignBusiness.get()));
             }
+
+            String organizerCountry = organizerCountry(configurationManager, organizationId);
+            if(StringUtils.isEmpty(organizerCountry(configurationManager, organizationId))) {
+                return Optional.empty();
+            }
+
+            Supplier<Boolean> applyVatToForeignBusiness = () -> configurationManager.getBooleanConfigValue(Configuration.from(organizationId, APPLY_VAT_FOREIGN_BUSINESS), true);
+            boolean vatExempt = !organizerCountry.equals(countryCode) && (euCountryCode || !applyVatToForeignBusiness.get());
+            return Optional.of(new VatDetail(vatNr, countryCode, true, "", "", euCountryCode ? VatDetail.Type.SKIPPED : VatDetail.Type.EXTRA_EU, vatExempt));
+
         };
     }
 
-    private static EUVatCheckResponse validateEUVat(String vat, String countryCode, EUVatChecker client) {
+    public void logSuccessfulValidation(VatDetail detail, String reservationId, int eventId) {
+        List<Map<String, Object>> modifications = List.of(
+            Map.of("vatNumber", detail.getVatNr(), "country", detail.getCountry(), "validationType", detail.getType())
+        );
+        Audit.EventType eventType = null;
+        switch(detail.getType()) {
+            case VIES:
+            case EXTRA_EU:
+                eventType = VAT_VALIDATION_SUCCESSFUL;
+            break;
+            case SKIPPED:
+                eventType = VAT_VALIDATION_SKIPPED;
+            break;
+            case FORMAL:
+                eventType = VAT_FORMAL_VALIDATION_SUCCESSFUL;
+            break;
+        }
+        auditingRepository.insert(reservationId, null, eventId, eventType, new Date(), RESERVATION, reservationId, modifications);
+    }
+
+
+    static EUVatCheckResponse validateEUVat(String vat, String countryCode, EUVatChecker client) {
 
         if(StringUtils.isEmpty(vat) || StringUtils.length(countryCode) != 2) {
             return null;
@@ -116,10 +142,10 @@ public class EuVatChecker {
 
     private static VatDetail getVatDetail(boolean reverseChargeEnabled, EUVatCheckResponse response, String vatNr, String countryCode, String organizerCountryCode) {
         boolean isValid = response.isValid();
-        return new VatDetail(vatNr, countryCode, isValid, response.getName(), response.getAddress(), isValid && reverseChargeEnabled && !organizerCountryCode.equals(countryCode));
+        return new VatDetail(vatNr, countryCode, isValid, response.getName(), response.getAddress(), VatDetail.Type.VIES, isValid && reverseChargeEnabled && !organizerCountryCode.equals(countryCode));
     }
 
-    private static String organizerCountry(ConfigurationManager configurationManager, int organizationId) {
+    static String organizerCountry(ConfigurationManager configurationManager, int organizationId) {
         return configurationManager.getStringConfigValue(Configuration.from(organizationId, ConfigurationKeys.COUNTRY_OF_BUSINESS), null);
     }
 
@@ -127,47 +153,8 @@ public class EuVatChecker {
         return configurationManager.getBooleanConfigValue(Configuration.from(organizationId, ConfigurationKeys.ENABLE_EU_VAT_DIRECTIVE), false);
     }
 
-    private static boolean validationEnabled(ConfigurationManager configurationManager, int organizationId) {
-        return StringUtils.isNotEmpty(organizerCountry(configurationManager, organizationId));
-    }
-
-    @RequiredArgsConstructor
-    public static class SameCountryValidator implements Predicate<String> {
-
-        private final EuVatChecker checker;
-        private final int organizationId;
-        private final int eventId;
-        private final String ticketReservationId;
-
-        @Override
-        public boolean test(String vatNr) {
-
-            if(StringUtils.isEmpty(vatNr)) {
-                log.warn("empty VAT number received for organizationId {}", organizationId);
-            }
-
-            String organizerCountry = organizerCountry(checker.configurationManager, organizationId);
-
-            if(!validationEnabled(checker.configurationManager, organizationId)) {
-                log.warn("VAT checking is not enabled for organizationId {} or country not defined ({})", organizationId, organizerCountry);
-                return false;
-            }
-
-            EUVatCheckResponse result = validateEUVat(vatNr, organizerCountry, checker.client);
-            boolean validStrict = result != null && result.isValid();
-            boolean valid = validStrict;
-
-            if(!valid && StringUtils.isNotBlank(vatNr)) {
-                valid = checker.extensionManager.handleTaxIdValidation(eventId, vatNr, organizerCountry);
-            }
-            if(valid && StringUtils.isNotEmpty(ticketReservationId)) {
-                Map<String, Object> data = new HashMap<>();
-                data.put("vatNumber", vatNr);
-                data.put("country", organizerCountry);
-                checker.auditingRepository.insert(ticketReservationId, null, eventId, validStrict ? VAT_VALIDATION_SUCCESSFUL : VAT_FORMAL_VALIDATION_SUCCESSFUL, new Date(), RESERVATION, ticketReservationId, singletonList(data));
-            }
-            return valid;
-        }
+    static boolean validationEnabled(ConfigurationManager configurationManager, int organizationId) {
+        return configurationManager.getBooleanConfigValue(Configuration.from(organizationId, ConfigurationKeys.ENABLE_VIES_VALIDATION), true);
     }
 
 

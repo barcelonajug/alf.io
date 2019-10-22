@@ -5,13 +5,13 @@
         bindings: {
             event: '<'
         },
-        controller: ['EventService', '$filter', '$location', ReservationsListCtrl],
+        controller: ['EventService', '$filter', '$location', '$stateParams', ReservationsListCtrl],
         templateUrl: '../resources/js/admin/feature/reservations-list/reservations-list.html'
     });
     
     
     
-    function ReservationsListCtrl(EventService, $filter, $location) {
+    function ReservationsListCtrl(EventService, $filter, $location, $stateParams) {
         var ctrl = this;
 
         var currentSearch = $location.search();
@@ -20,13 +20,12 @@
         ctrl.currentPage = currentSearch.page || 1;
         ctrl.currentPagePendingPayment = currentSearch.pendingPaymentPage || 1;
         ctrl.currentPageCancelled = currentSearch.cancelledPage || 1;
-        ctrl.toSearch = currentSearch.search || '';
+        ctrl.toSearch = currentSearch.search || $stateParams.search || '';
         ctrl.selectedTab = currentSearch.t || 1;
 
         ctrl.itemsPerPage = 50;
         ctrl.formatFullName = formatFullName;
         ctrl.updateFilteredData = loadData;
-        ctrl.truncateReservationId = truncateReservationId;
         ctrl.onTabSelected = onTabSelected;
 
         this.$onInit = function() {
@@ -35,7 +34,7 @@
 
         function loadData(loadPartially) {
 
-            loadPartially = loadPartially || {pending: true, completed: true, paymentPending: true, cancelled: true, stuck: true};
+            loadPartially = loadPartially || {pending: true, completed: true, paymentPending: true, cancelled: true, stuck: true, credited: true};
 
             $location.search({
                 pendingPage: ctrl.currentPagePending,
@@ -54,7 +53,7 @@
             }
 
             if(loadPartially.paymentPending) {
-                EventService.findAllReservations(ctrl.event.shortName, ctrl.currentPagePendingPayment - 1, ctrl.toSearch, ['IN_PAYMENT', 'EXTERNAL_PROCESSING_PAYMENT', 'OFFLINE_PAYMENT']).then(function (res) {
+                EventService.findAllReservations(ctrl.event.shortName, ctrl.currentPagePendingPayment - 1, ctrl.toSearch, ['IN_PAYMENT', 'EXTERNAL_PROCESSING_PAYMENT', 'WAITING_EXTERNAL_CONFIRMATION', 'OFFLINE_PAYMENT']).then(function (res) {
                     ctrl.paymentPendingReservations = res.data.left;
                     ctrl.paymentPendingFoundReservations = res.data.right;
                 });
@@ -80,6 +79,13 @@
                     ctrl.foundStuckReservations = res.data.right;
                 });
             }
+
+            if(loadPartially.credited) {
+                EventService.findAllReservations(ctrl.event.shortName, 0, ctrl.toSearch, ['CREDIT_NOTE_ISSUED']).then(function(res) {
+                    ctrl.creditedReservations = res.data.left;
+                    ctrl.foundCreditedReservations = res.data.right;
+                });
+            }
         }
 
         function formatFullName(r) {
@@ -88,10 +94,6 @@
             } else {
                 return r.fullName;
             }
-        }
-
-        function truncateReservationId(id) {
-            return id.substring(0,8).toUpperCase();
         }
 
         function onTabSelected(n) {

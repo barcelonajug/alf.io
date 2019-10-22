@@ -35,6 +35,7 @@ import alfio.manager.*;
 import alfio.manager.i18n.I18nManager;
 import alfio.manager.support.CheckInStatus;
 import alfio.manager.support.TicketAndCheckInResult;
+import alfio.manager.system.ConfigurationManager;
 import alfio.manager.user.UserManager;
 import alfio.model.*;
 import alfio.model.audit.ScanAudit;
@@ -46,6 +47,7 @@ import alfio.model.result.ValidationResult;
 import alfio.model.system.ConfigurationKeys;
 import alfio.model.transaction.PaymentProxy;
 import alfio.model.user.User;
+import alfio.repository.AuditingRepository;
 import alfio.repository.EventRepository;
 import alfio.repository.TicketCategoryRepository;
 import alfio.repository.TicketReservationRepository;
@@ -53,10 +55,7 @@ import alfio.repository.audit.ScanAuditRepository;
 import alfio.repository.system.ConfigurationRepository;
 import alfio.repository.user.OrganizationRepository;
 import alfio.test.util.IntegrationTestUtil;
-import alfio.util.BaseIntegrationTest;
-import alfio.util.EventUtil;
-import alfio.util.Json;
-import alfio.util.TemplateManager;
+import alfio.util.*;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.opencsv.CSVReader;
 import org.apache.commons.codec.digest.DigestUtils;
@@ -70,10 +69,14 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.mock.web.MockHttpSession;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.TestingAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.AuthorityUtils;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
@@ -135,9 +138,6 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
     private EventRepository eventRepository;
 
     @Autowired
-    private EuVatChecker euVatChecker;
-
-    @Autowired
     private EventController eventController;
 
     @Autowired
@@ -164,7 +164,11 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
     @Autowired
     private ScanAuditRepository scanAuditRepository;
     @Autowired
+    private AuditingRepository auditingRepository;
+    @Autowired
     private TicketReservationManager ticketReservationManager;
+    @Autowired
+    private ExtensionManager extensionManager;
 
     @Autowired
     private TicketCategoryRepository ticketCategoryRepository;
@@ -187,6 +191,11 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
     @Autowired
     private TemplateManager templateManager;
 
+    @Autowired
+    private ConfigurationManager configurationManager;
+    @Autowired
+    private NamedParameterJdbcTemplate jdbcTemplate;
+
     private ReservationApiController reservationApiController;
     private InvoiceReceiptController invoiceReceiptController;
 
@@ -203,18 +212,19 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
             new TicketCategoryModification(null, "default", AVAILABLE_SEATS,
                 new DateTimeModification(LocalDate.now().minusDays(1), LocalTime.now()),
                 new DateTimeModification(LocalDate.now().plusDays(1), LocalTime.now()),
-                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null));
+                DESCRIPTION, BigDecimal.TEN, false, "", false, null, null, null, null, null, null));
         Pair<Event, String> eventAndUser = initEvent(categories, organizationRepository, userManager, eventManager, eventRepository);
 
         event = eventAndUser.getKey();
         user = eventAndUser.getValue() + "_owner";
 
         //
-        reservationApiController = new ReservationApiController(eventRepository, ticketHelper, mock(TemplateManager.class), i18nManager, euVatChecker, ticketReservationRepository, ticketReservationManager);
-        invoiceReceiptController = new InvoiceReceiptController(eventRepository, ticketReservationManager, fileUploadManager, templateManager);
+
+        reservationApiController = new ReservationApiController(eventRepository, ticketHelper, mock(TemplateManager.class), i18nManager, ticketReservationRepository, ticketReservationManager);
+        invoiceReceiptController = new InvoiceReceiptController(eventRepository, ticketReservationManager, fileUploadManager, templateManager, configurationManager, extensionManager);
 
         //promo code at event level
-        eventManager.addPromoCode(PROMO_CODE, event.getId(), null, ZonedDateTime.now().minusDays(2), event.getEnd().plusDays(2), 10, PromoCodeDiscount.DiscountType.PERCENTAGE, null, 3);
+        eventManager.addPromoCode(PROMO_CODE, event.getId(), null, ZonedDateTime.now().minusDays(2), event.getEnd().plusDays(2), 10, PromoCodeDiscount.DiscountType.PERCENTAGE, null, 3, "description", "test@test.ch", PromoCodeDiscount.CodeType.DISCOUNT, null);
     }
 
     private static final String PROMO_CODE = "MYPROMOCODE";
@@ -296,9 +306,13 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         //check receipt/invoice
         MockHttpServletResponse responseForReceipt = new MockHttpServletResponse();
         // no invoice
-        Assert.assertEquals(404, invoiceReceiptController.getInvoice(eventName, reservationIdentifier, new MockHttpServletResponse()).getStatusCodeValue());
+
+        Authentication anon = new AnonymousAuthenticationToken("key", "anonymous",
+            AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS"));
+
+        Assert.assertEquals(404, invoiceReceiptController.getInvoice(eventName, reservationIdentifier, new MockHttpServletResponse(), anon).getStatusCodeValue());
         // we got a receipt
-        Assert.assertEquals(200, invoiceReceiptController.getReceipt(eventName, reservationIdentifier, responseForReceipt).getStatusCodeValue());
+        Assert.assertEquals(200, invoiceReceiptController.getReceipt(eventName, reservationIdentifier, responseForReceipt, anon).getStatusCodeValue());
         Assert.assertEquals("attachment; filename=\"receipt-" + eventName + "-" + reservationIdentifier + ".pdf\"", responseForReceipt.getHeader("Content-Disposition"));
         //
 
@@ -422,9 +436,9 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         Mockito.when(sponsorPrincipal.getName()).thenReturn(sponsorUser.getUsername());
 
         // check failures
-        assertEquals(CheckInStatus.EVENT_NOT_FOUND, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest("not-existing-event", "not-existing-ticket"), sponsorPrincipal).getBody().getResult().getStatus());
-        assertEquals(CheckInStatus.TICKET_NOT_FOUND, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, "not-existing-ticket"), sponsorPrincipal).getBody().getResult().getStatus());
-        assertEquals(CheckInStatus.INVALID_TICKET_STATE, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, ticketIdentifier), sponsorPrincipal).getBody().getResult().getStatus());
+        assertEquals(CheckInStatus.EVENT_NOT_FOUND, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest("not-existing-event", "not-existing-ticket", null), sponsorPrincipal).getBody().getResult().getStatus());
+        assertEquals(CheckInStatus.TICKET_NOT_FOUND, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, "not-existing-ticket", null), sponsorPrincipal).getBody().getResult().getStatus());
+        assertEquals(CheckInStatus.INVALID_TICKET_STATE, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, ticketIdentifier, null), sponsorPrincipal).getBody().getResult().getStatus());
         //
 
 
@@ -446,10 +460,17 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
 
 
         //
-        List<Integer> offlineIdentifiers = checkInApiController.getOfflineIdentifiers(event.getShortName(), 0L, new MockHttpServletResponse(), principal);
+        var offlineIdentifiers = checkInApiController.getOfflineIdentifiers(event.getShortName(), 0L, new MockHttpServletResponse(), principal);
+        assertFalse("Alf.io-PI integration must be enabled by default", offlineIdentifiers.isEmpty());
+
+        //disable Alf.io-PI
+        configurationRepository.insert(ConfigurationKeys.ALFIO_PI_INTEGRATION_ENABLED.name(), "false", null);
+        offlineIdentifiers = checkInApiController.getOfflineIdentifiers(event.getShortName(), 0L, new MockHttpServletResponse(), principal);
         assertTrue(offlineIdentifiers.isEmpty());
+
+        //re-enable Alf.io-PI
         configurationRepository.insertEventLevel(event.getOrganizationId(), event.getId(), ConfigurationKeys.OFFLINE_CHECKIN_ENABLED.name(), "true", null);
-        configurationRepository.insert(ConfigurationKeys.ALFIO_PI_INTEGRATION_ENABLED.name(), "true", null);
+        configurationRepository.update(ConfigurationKeys.ALFIO_PI_INTEGRATION_ENABLED.name(), "true");
         offlineIdentifiers = checkInApiController.getOfflineIdentifiers(event.getShortName(), 0L, new MockHttpServletResponse(), principal);
         assertFalse(offlineIdentifiers.isEmpty());
         Map<String, String> payload = checkInApiController.getOfflineEncryptedInfo(event.getShortName(), Collections.emptyList(), offlineIdentifiers, principal);
@@ -463,7 +484,7 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         Map<String, String> jsonPayload = Json.fromJson(ticketPayload, new TypeReference<Map<String, String>>() {
         });
         assertNotNull(jsonPayload);
-        assertEquals(8, jsonPayload.size());
+        assertEquals(9, jsonPayload.size());
         assertEquals("Test", jsonPayload.get("firstName"));
         assertEquals("OTest", jsonPayload.get("lastName"));
         assertEquals("Test OTest", jsonPayload.get("fullName"));
@@ -472,11 +493,12 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         assertEquals("CHECKED_IN", jsonPayload.get("status"));
         String categoryName = ticketCategoryRepository.findByEventId(event.getId()).stream().findFirst().orElseThrow(IllegalStateException::new).getName();
         assertEquals(categoryName, jsonPayload.get("category"));
+        assertEquals(TicketCategory.TicketCheckInStrategy.ONCE_PER_EVENT.name(), jsonPayload.get("categoryCheckInStrategy"));
         //
 
         // check register sponsor scan success flow
         assertTrue(attendeeApiController.getScannedBadges(event.getShortName(), EventUtil.JSON_DATETIME_FORMATTER.format(LocalDateTime.of(1970, 1, 1, 0, 0)), sponsorPrincipal).getBody().isEmpty());
-        assertEquals(CheckInStatus.SUCCESS, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, ticket.getUuid()), sponsorPrincipal).getBody().getResult().getStatus());
+        assertEquals(CheckInStatus.SUCCESS, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, ticket.getUuid(), null), sponsorPrincipal).getBody().getResult().getStatus());
         assertEquals(1, attendeeApiController.getScannedBadges(event.getShortName(), EventUtil.JSON_DATETIME_FORMATTER.format(LocalDateTime.of(1970, 1, 1, 0, 0)), sponsorPrincipal).getBody().size());
 
         // check export
@@ -489,7 +511,61 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         Assert.assertEquals("sponsor", csvSponsorScan.get(1)[0]);
         Assert.assertEquals("Test OTest", csvSponsorScan.get(1)[3]);
         Assert.assertEquals("testmctest@test.com", csvSponsorScan.get(1)[4]);
+        Assert.assertEquals("", csvSponsorScan.get(1)[5]);
         //
+
+        // check update notes
+        assertEquals(CheckInStatus.SUCCESS, attendeeApiController.scanBadge(new AttendeeApiController.SponsorScanRequest(eventName, ticket.getUuid(), "this is a very good lead!"), sponsorPrincipal).getBody().getResult().getStatus());
+        assertEquals(1, attendeeApiController.getScannedBadges(event.getShortName(), EventUtil.JSON_DATETIME_FORMATTER.format(LocalDateTime.of(1970, 1, 1, 0, 0)), sponsorPrincipal).getBody().size());
+        response = new MockHttpServletResponse();
+        eventApiController.downloadSponsorScanExport(event.getShortName(), "csv", response, principal);
+        response.getContentAsString();
+        csvReader = new CSVReader(new StringReader(response.getContentAsString()));
+        csvSponsorScan = csvReader.readAll();
+        Assert.assertEquals(2, csvSponsorScan.size());
+        Assert.assertEquals("sponsor", csvSponsorScan.get(1)[0]);
+        Assert.assertEquals("Test OTest", csvSponsorScan.get(1)[3]);
+        Assert.assertEquals("testmctest@test.com", csvSponsorScan.get(1)[4]);
+        Assert.assertEquals("this is a very good lead!", csvSponsorScan.get(1)[5]);
+
+        // #742 - test multiple check-ins
+
+        // since on the badge we don't have the full ticket info, we will pass in "null" as scanned code
+        CheckInApiController.TicketCode badgeScan = new CheckInApiController.TicketCode();
+        badgeScan.setCode(null);
+        ticketAndcheckInResult = checkInApiController.checkIn(event.getId(), ticketIdentifier, badgeScan, new TestingAuthenticationToken("ciccio", "ciccio"));
+        // ONCE_PER_DAY is disabled by default, therefore we get an error
+        assertEquals(CheckInStatus.EMPTY_TICKET_CODE, ticketAndcheckInResult.getResult().getStatus());
+        // enable ONCE_PER_DAY
+        TicketCategory category = ticketCategoryRepository.getById(ticketDecorator.getCategoryId());
+        ticketCategoryRepository.update(category.getId(), category.getName(), category.getInception(event.getZoneId()), category.getExpiration(event.getZoneId()), category.getMaxTickets(), category.isAccessRestricted(),
+            MonetaryUtil.unitToCents(category.getPrice()), category.getCode(), category.getValidCheckInFrom(), category.getValidCheckInTo(), category.getTicketValidityStart(), category.getTicketValidityEnd(),
+            TicketCategory.TicketCheckInStrategy.ONCE_PER_DAY
+        );
+        ticketAndcheckInResult = checkInApiController.checkIn(event.getId(), ticketIdentifier, badgeScan, new TestingAuthenticationToken("ciccio", "ciccio"));
+        // the event start date is in one week, so we expect an error here
+        assertEquals(CheckInStatus.INVALID_TICKET_CATEGORY_CHECK_IN_DATE, ticketAndcheckInResult.getResult().getStatus());
+
+        eventRepository.updateHeader(event.getId(), event.getDisplayName(), event.getWebsiteUrl(), event.getExternalUrl(), event.getTermsAndConditionsUrl(), event.getPrivacyPolicyUrl(), event.getImageUrl(),
+            event.getFileBlobId(), event.getLocation(), event.getLatitude(), event.getLongitude(), ZonedDateTime.now(event.getZoneId()).minusSeconds(1), event.getEnd(), event.getTimeZone(),
+            event.getOrganizationId(), event.getLocales());
+
+        ticketAndcheckInResult = checkInApiController.checkIn(event.getId(), ticketIdentifier, badgeScan, new TestingAuthenticationToken("ciccio", "ciccio"));
+        // we have already scanned the ticket today, so we expect to receive a warning
+        assertEquals(CheckInStatus.BADGE_SCAN_ALREADY_DONE, ticketAndcheckInResult.getResult().getStatus());
+        assertEquals(1, (int) auditingRepository.countAuditsOfTypeForReservation(reservationIdentifier, Audit.EventType.BADGE_SCAN));
+
+        // move the scans to yesterday
+        // we expect 3 rows because:
+        // 1 check-in
+        // 1 revert
+        // 1 badge scan
+        assertEquals(3, jdbcTemplate.update("update auditing set event_time = event_time - interval '1 day' where reservation_id = :reservationId and event_type in ('BADGE_SCAN', 'CHECK_IN')", Map.of("reservationId", reservationIdentifier)));
+
+        ticketAndcheckInResult = checkInApiController.checkIn(event.getId(), ticketIdentifier, badgeScan, new TestingAuthenticationToken("ciccio", "ciccio"));
+        // we now expect to receive a successful message
+        assertEquals(CheckInStatus.BADGE_SCAN_SUCCESS, ticketAndcheckInResult.getResult().getStatus());
+        assertEquals(2, (int) auditingRepository.countAuditsOfTypeForReservation(reservationIdentifier, Audit.EventType.BADGE_SCAN));
         
         eventManager.deleteEvent(event.getId(), principal.getName());
 
@@ -530,7 +606,7 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         Principal principal = mock(Principal.class);
         Mockito.when(principal.getName()).thenReturn(user);
         MockHttpServletResponse response = new MockHttpServletResponse();
-        List<SerializablePair<String, String>> fields = eventApiController.getAllFields(eventName);
+        List<SerializablePair<String, String>> fields = eventApiController.getAllFields(eventName, principal);
         MockHttpServletRequest request = new MockHttpServletRequest();
         request.setParameter("fields", fields.stream().map(SerializablePair::getKey).toArray(String[]::new));
         eventApiController.downloadAllTicketsCSV(eventName, "csv", request, response, principal);
@@ -538,17 +614,23 @@ public class ReservationFlowIntegrationTest extends BaseIntegrationTest {
         List<String[]> csv = csvReader.readAll();
         assertEquals(2, csv.size());
         assertEquals(ticketIdentifier, csv.get(1)[0]);
-        assertEquals("default", csv.get(1)[2]);
-        assertEquals("ACQUIRED", csv.get(1)[4]);
-        assertEquals(fullName, csv.get(1)[10]);
+        assertEquals("default", csv.get(1)[1]);
+        assertEquals("ACQUIRED", csv.get(1)[3]);
+        assertEquals(fullName, csv.get(1)[9]);
     }
 
     private void validatePayment(String eventName, String reservationIdentifier) {
         Principal principal = mock(Principal.class);
         Mockito.when(principal.getName()).thenReturn(user);
-        assertEquals(1, eventApiController.getPendingPayments(eventName, principal).size());
+        var reservation = ticketReservationRepository.findReservationById(reservationIdentifier);
+        assertEquals(900, reservation.getFinalPriceCts());
+        assertEquals(1000, reservation.getSrcPriceCts());
+        assertEquals(9, reservation.getVatCts());
+        assertEquals(100, reservation.getDiscountCts());
+        assertEquals(1, eventApiController.getPendingPayments(eventName).size());
         assertEquals("OK", eventApiController.confirmPayment(eventName, reservationIdentifier, principal, new BindingAwareModelMap(), new MockHttpServletRequest()));
-        assertEquals(0, eventApiController.getPendingPayments(eventName, principal).size());
+        assertEquals(0, eventApiController.getPendingPayments(eventName).size());
+        assertEquals(900, eventRepository.getGrossIncome(event.getId()));
     }
 
     private String payOffline(String eventName, String reservationIdentifier) {

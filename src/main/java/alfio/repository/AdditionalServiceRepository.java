@@ -18,19 +18,42 @@ package alfio.repository;
 
 import alfio.model.AdditionalService;
 import ch.digitalfondue.npjt.*;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.ZonedDateTime;
-import java.util.List;
+import java.util.*;
 
 @QueryRepository
 public interface AdditionalServiceRepository {
 
-    @Query("select * from additional_service where event_id_fk = :eventId order by ordinal")
+    String SELECT_PREFIX = "select distinct(ads.*), sum(case asi.status when 'ACQUIRED' then 1 else 0 end) as count_confirmed from additional_service ads left join additional_service_item asi on asi.additional_service_id_fk = ads.id where ads.event_id_fk = :eventId";
+    String SELECT_SUFFIX = " group by ads.id order by ads.ordinal";
+
+    @Query(SELECT_PREFIX + SELECT_SUFFIX)
     List<AdditionalService> loadAllForEvent(@Bind("eventId") int eventId);
 
-    @Query("select * from additional_service where id = :id and event_id_fk = :eventId")
+    NamedParameterJdbcTemplate getJdbcTemplate();
+
+    default Map<Integer, Integer> getCount(int eventId) {
+        Map<Integer, Integer> res = new HashMap<>();
+        getJdbcTemplate().query("select count(*) as cnt, additional_service_id_fk from additional_service_item where event_id_fk = :eventId group by additional_service_id_fk",
+            Collections.singletonMap("eventId", eventId),
+            rse -> {
+                res.put(rse.getInt("additional_service_id_fk"), rse.getInt("cnt"));
+            }
+        );
+        return res;
+    }
+
+    @Query(SELECT_PREFIX + " and ads.supplement_policy = :supplementPolicy" + SELECT_SUFFIX)
+    List<AdditionalService> findAllInEventWithPolicy(@Bind("eventId") int eventId, @Bind("supplementPolicy") AdditionalService.SupplementPolicy policy);
+
+    @Query(SELECT_PREFIX + " and ads.id = :id" + SELECT_SUFFIX)
     AdditionalService getById(@Bind("id") int id, @Bind("eventId") int eventId);
+
+    @Query(SELECT_PREFIX + " and ads.id = :id" + SELECT_SUFFIX)
+    Optional<AdditionalService> getOptionalById(@Bind("id") int id, @Bind("eventId") int eventId);
 
     @Query("delete from additional_service where id = :id and event_id_fk = :eventId")
     int delete(@Bind("id") int id, @Bind("eventId") int eventId);
@@ -52,6 +75,4 @@ public interface AdditionalServiceRepository {
                @Bind("inceptionTs") ZonedDateTime inception, @Bind("expirationTs") ZonedDateTime expiration, @Bind("vat") BigDecimal vat,
                @Bind("vatType") AdditionalService.VatType vatType, @Bind("srcPriceCts") int srcPriceCts);
 
-    @Query("select * from additional_service where event_id_fk = :eventId and supplement_policy = :supplementPolicy order by ordinal")
-    List<AdditionalService> findAllInEventWithPolicy(@Bind("eventId") int eventId, @Bind("supplementPolicy") AdditionalService.SupplementPolicy policy);
 }

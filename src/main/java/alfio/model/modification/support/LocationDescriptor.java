@@ -21,8 +21,9 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
-import org.apache.commons.text.StrSubstitutor;
+import org.apache.commons.text.StringSubstitutor;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -50,13 +51,13 @@ public class LocationDescriptor {
         this.mapUrl = mapUrl;
     }
 
+    public boolean getHasMapUrl() {
+        return StringUtils.isNotBlank(mapUrl);
+    }
+
     public static LocationDescriptor fromGeoData(Pair<String, String> coordinates, TimeZone timeZone, Map<ConfigurationKeys, Optional<String>> geoConf) {
-        Map<String, String> params = new HashMap<>();
         String lat = coordinates.getLeft();
         String lng = coordinates.getRight();
-        params.put("latitude", lat);
-        params.put("longitude", lng);
-
         return new LocationDescriptor(timeZone.getID(), coordinates.getLeft(), coordinates.getRight(), getMapUrl(lat, lng, geoConf));
     }
 
@@ -70,12 +71,12 @@ public class LocationDescriptor {
 
         fillParams(provider, geoConf, params);
 
-        return new StrSubstitutor(params).replace(mapUrl);
+        return new StringSubstitutor(params).replace(mapUrl);
     }
 
     // for backward compatibility reason, the logic is not straightforward
     public static ConfigurationKeys.GeoInfoProvider getProvider(Map<ConfigurationKeys, Optional<String>> geoConf) {
-        if((!geoConf.containsKey(ConfigurationKeys.MAPS_PROVIDER) || !geoConf.get(ConfigurationKeys.MAPS_PROVIDER).isPresent()) &&
+        if((!geoConf.containsKey(ConfigurationKeys.MAPS_PROVIDER) || geoConf.get(ConfigurationKeys.MAPS_PROVIDER).isEmpty()) &&
             (geoConf.containsKey(ConfigurationKeys.MAPS_CLIENT_API_KEY) && geoConf.get(ConfigurationKeys.MAPS_CLIENT_API_KEY).isPresent())) {
             return ConfigurationKeys.GeoInfoProvider.GOOGLE;
         } else if (geoConf.containsKey(ConfigurationKeys.MAPS_PROVIDER) && geoConf.get(ConfigurationKeys.MAPS_PROVIDER).isPresent()) {
@@ -89,7 +90,7 @@ public class LocationDescriptor {
         switch (provider) {
             case GOOGLE: return "https://maps.googleapis.com/maps/api/staticmap?center=${latitude},${longitude}&key=${key}&zoom=16&size=400x400&markers=color:blue%7Clabel:E%7C${latitude},${longitude}";
             case HERE: return "https://image.maps.api.here.com/mia/1.6/mapview?c=${latitude},${longitude}&z=16&w=400&h=400&poi=${latitude},${longitude}&app_id=${appId}&app_code=${appCode}";
-            default: return "https://tyler-demo.herokuapp.com/?center=${latitude},${longitude}&zoom=16&size=400x400&markers=color:blue%7Clabel:E%7C${latitude},${longitude}";
+            default: return "";
         }
     }
 

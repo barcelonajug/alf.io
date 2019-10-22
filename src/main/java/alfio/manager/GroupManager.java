@@ -35,8 +35,6 @@ import lombok.extern.log4j.Log4j2;
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
-import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -57,18 +55,15 @@ import static java.util.Collections.singletonList;
 public class GroupManager {
 
     private final GroupRepository groupRepository;
-    private final NamedParameterJdbcTemplate jdbcTemplate;
     private final TicketRepository ticketRepository;
     private final AuditingRepository auditingRepository;
     private final TransactionTemplate requiresNewTransactionTemplate;
 
     public GroupManager(GroupRepository groupRepository,
-                        NamedParameterJdbcTemplate jdbcTemplate,
                         TicketRepository ticketRepository,
                         AuditingRepository auditingRepository,
                         PlatformTransactionManager transactionManager) {
         this.groupRepository = groupRepository;
-        this.jdbcTemplate = jdbcTemplate;
         this.ticketRepository = ticketRepository;
         this.auditingRepository = auditingRepository;
         this.requiresNewTransactionTemplate = new TransactionTemplate(transactionManager, new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW));
@@ -170,13 +165,8 @@ public class GroupManager {
         List<String> duplicates = grouped.entrySet().stream().filter(e -> e.getValue().size() > 1).map(Map.Entry::getKey).collect(Collectors.toList());
 
         return new Result.Builder<Integer>()
-            .checkPrecondition(duplicates::isEmpty, ErrorCode.lazy(() -> ErrorCode.custom("value.duplicate", String.join(", ", duplicates))))
-            .build(() -> {
-                MapSqlParameterSource[] params = members.stream()
-                    .map(i -> new MapSqlParameterSource("groupId", groupId).addValue("value", i.getValue().toLowerCase()).addValue("description", i.getDescription()))
-                    .toArray(MapSqlParameterSource[]::new);
-                return Arrays.stream(jdbcTemplate.batchUpdate(groupRepository.insertItemTemplate(), params)).sum();
-            });
+            .checkPrecondition(duplicates::isEmpty, ErrorCode.lazy(() -> ErrorCode.custom("value.duplicate", duplicates.stream().limit(10).collect(Collectors.joining(", ")))))
+            .build(() -> Arrays.stream(groupRepository.insert(groupId, members)).sum());
     }
 
     @Transactional
@@ -187,7 +177,7 @@ public class GroupManager {
         }
         LinkedGroup configuration = configurations.get(0);
         Optional<GroupMember> optionalItem = getMatchingMember(configuration, ticket.getEmail());
-        if(!optionalItem.isPresent()) {
+        if(optionalItem.isEmpty()) {
             return false;
         }
         GroupMember item = optionalItem.get();
@@ -238,16 +228,22 @@ public class GroupManager {
     @Transactional
     public Optional<GroupModification> update(int listId, GroupModification modification) {
 
-        if(!groupRepository.getOptionalById(listId).isPresent() || CollectionUtils.isEmpty(modification.getItems())) {
+        if(groupRepository.getOptionalById(listId).isEmpty() || CollectionUtils.isEmpty(modification.getItems())) {
             return Optional.empty();
         }
 
-        List<GroupMember> existingItems = groupRepository.getItems(listId);
+        List<String> existingValues = groupRepository.getAllValuesIncludingNotActive(listId);
         List<GroupMemberModification> notPresent = modification.getItems().stream()
-            .filter(i -> i.getId() == null && existingItems.stream().noneMatch(ali -> ali.getValue().equals(i.getValue())))
+            .filter(i -> i.getId() == null && !existingValues.contains(i.getValue().strip().toLowerCase()))
+            .distinct()
             .collect(Collectors.toList());
+
         if(!notPresent.isEmpty()) {
-            insertMembers(listId, notPresent);
+            var insertResult = insertMembers(listId, notPresent);
+            if(!insertResult.isSuccess()) {
+                var error = Objects.requireNonNull(insertResult.getFirstErrorOrNull());
+                throw new DuplicateGroupItemException(error.getDescription());
+            }
         }
         groupRepository.update(listId, modification.getName(), modification.getDescription());
         return loadComplete(listId);
@@ -258,8 +254,7 @@ public class GroupManager {
         if(memberIds.isEmpty()) {
             return false;
         }
-        MapSqlParameterSource[] params = memberIds.stream().map(i -> toParameterSource(groupId, i)).toArray(MapSqlParameterSource[]::new);
-        jdbcTemplate.batchUpdate(groupRepository.deactivateGroupMember(), params);
+        groupRepository.deactivateGroupMember(memberIds, groupId);
         return true;
     }
 
@@ -272,12 +267,6 @@ public class GroupManager {
         groupRepository.disableAllLinks(groupId);
         Validate.isTrue(groupRepository.deactivateGroup(groupId) == 1, "unexpected error while disabling group");
         return true;
-    }
-
-    private static MapSqlParameterSource toParameterSource(int groupId, Integer itemId) {
-        return new MapSqlParameterSource("groupId", groupId)
-            .addValue("memberId", itemId)
-            .addValue("disabledPlaceholder", UUID.randomUUID().toString());
     }
 
     @RequiredArgsConstructor
@@ -296,5 +285,11 @@ public class GroupManager {
     public static class WhitelistValidationItem {
         private final int categoryId;
         private final String value;
+    }
+
+    public static class DuplicateGroupItemException extends RuntimeException {
+        public DuplicateGroupItemException(String message) {
+            super(message);
+        }
     }
 }

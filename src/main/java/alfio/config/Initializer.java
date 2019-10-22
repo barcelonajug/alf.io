@@ -18,9 +18,7 @@ package alfio.config;
 
 import alfio.util.DefaultExceptionHandler;
 import com.openhtmltopdf.util.XRLog;
-import lombok.extern.log4j.Log4j2;
 import org.apache.commons.lang3.Validate;
-import org.springframework.core.env.ConfigurableEnvironment;
 import org.springframework.core.env.Environment;
 import org.springframework.core.env.Profiles;
 import org.springframework.web.context.ConfigurableWebApplicationContext;
@@ -35,7 +33,6 @@ import javax.servlet.SessionCookieConfig;
 import java.util.Objects;
 import java.util.logging.Level;
 
-@Log4j2
 public class Initializer extends AbstractAnnotationConfigDispatcherServletInitializer {
 
     public static final String PROFILE_DEV = "dev";
@@ -72,8 +69,7 @@ public class Initializer extends AbstractAnnotationConfigDispatcherServletInitia
     protected WebApplicationContext createRootApplicationContext() {
         ConfigurableWebApplicationContext ctx = ((ConfigurableWebApplicationContext) super.createRootApplicationContext());
         Objects.requireNonNull(ctx, "Something really bad is happening...");
-        ConfigurableEnvironment environment = ctx.getEnvironment();
-        this.environment = environment;
+        this.environment = ctx.getEnvironment();
         return ctx;
     }
 

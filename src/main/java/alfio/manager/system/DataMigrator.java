@@ -16,16 +16,19 @@
  */
 package alfio.manager.system;
 
+import alfio.manager.TicketReservationManager;
 import alfio.model.*;
 import alfio.model.system.ConfigurationKeys;
 import alfio.model.system.EventMigration;
 import alfio.model.transaction.PaymentProxy;
 import alfio.repository.EventRepository;
 import alfio.repository.TicketCategoryRepository;
+import alfio.repository.TicketSearchRepository;
 import alfio.repository.system.ConfigurationRepository;
 import alfio.repository.system.EventMigrationRepository;
 import alfio.util.MonetaryUtil;
 import lombok.extern.log4j.Log4j2;
+import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.lang3.tuple.Pair;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +48,7 @@ import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.IntStream;
 
 import static alfio.model.PriceContainer.VatStatus.*;
 import static alfio.repository.TicketRepository.RESET_TICKET;
@@ -56,7 +60,7 @@ import static java.util.stream.Collectors.*;
 @Log4j2
 public class DataMigrator {
 
-    private static final Pattern VERSION_PATTERN = Pattern.compile("(\\d\\.)([0-9\\.]*)(-SNAPSHOT)?");
+    private static final Pattern VERSION_PATTERN = Pattern.compile("(\\d\\.)([0-9.]*)(-SNAPSHOT)?");
     private static final Map<String, String> PRICE_UPDATE_BY_KEY = new LinkedHashMap<>();
     private final EventMigrationRepository eventMigrationRepository;
     private final EventRepository eventRepository;
@@ -67,6 +71,8 @@ public class DataMigrator {
     private final TransactionTemplate transactionTemplate;
     private final ConfigurationRepository configurationRepository;
     private final NamedParameterJdbcTemplate jdbc;
+    private final TicketReservationManager ticketReservationManager;
+    private final TicketSearchRepository ticketSearchRepository;
 
     static {
         PRICE_UPDATE_BY_KEY.put("event", "update event set src_price_cts = :srcPriceCts, vat_status = :vatStatus where id = :eventId");
@@ -84,7 +90,9 @@ public class DataMigrator {
                         @Value("${alfio.build-ts}") String buildTimestamp,
                         PlatformTransactionManager transactionManager,
                         ConfigurationRepository configurationRepository,
-                        NamedParameterJdbcTemplate jdbc) {
+                        NamedParameterJdbcTemplate jdbc,
+                        TicketReservationManager ticketReservationManager,
+                        TicketSearchRepository ticketSearchRepository) {
         this.eventMigrationRepository = eventMigrationRepository;
         this.eventRepository = eventRepository;
         this.ticketCategoryRepository = ticketCategoryRepository;
@@ -94,18 +102,65 @@ public class DataMigrator {
         this.currentVersionAsString = currentVersion;
         this.buildTimestamp = ZonedDateTime.parse(buildTimestamp);
         this.transactionTemplate = new TransactionTemplate(transactionManager, new DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW));
+        this.ticketReservationManager = ticketReservationManager;
+        this.ticketSearchRepository = ticketSearchRepository;
     }
 
     public void migrateEventsToCurrentVersion() {
-        eventRepository.findAll().forEach(this::migrateEventToCurrentVersion);
+        List<Event> events = eventRepository.findAll();
+        events.forEach(this::migrateEventToCurrentVersion);
         fillReservationsLanguage();
         fillDefaultOptions();
+        fixReservationPrice(events);
+    }
+
+    private void fixReservationPrice(List<Event> events) {
+        transactionTemplate.execute(ts -> {
+            Map<Integer, List<String>> candidates = jdbc.queryForList("select id, event_id_fk from tickets_reservation where src_price_cts = 0 and payment_method <> 'NONE' and status not in ('CANCELLED', 'CREDIT_NOTE_ISSUED') order by 2", Map.of())
+                .stream()
+                .map(m -> Pair.of((Integer) m.get("event_id_fk"), (String) m.get("id")))
+                .collect(groupingBy(Pair::getKey, mapping(Pair::getValue, toList())));
+
+            for(var entry : candidates.entrySet()) {
+                var event = events.stream().filter(e -> e.getId() == entry.getKey()).findFirst().orElseThrow();
+                ListUtils.partition(entry.getValue(), 1000) // limit query size and batch update size
+                    .forEach(reservations -> fixReservationsForEvent(event, reservations));
+            }
+            return null;
+        });
+    }
+
+    private void fixReservationsForEvent(Event event, List<String> reservations) {
+        var byReservationId = ticketSearchRepository.loadAllReservationsWithTickets(event.getId(), reservations).stream()
+            .collect(groupingBy(trt -> trt.getTicketReservation().getId()));
+        log.trace("found {} reservations to fix for event {}", byReservationId.size(), event.getShortName());
+        if(!byReservationId.isEmpty()) {
+            var reservationsToUpdate = byReservationId.values().stream()
+                .map(ticketsReservationAndTransactions -> {
+                    var tickets = ticketsReservationAndTransactions.stream().map(TicketWithReservationAndTransaction::getTicket).collect(toList());
+                    var ticketReservation = ticketsReservationAndTransactions.get(0).getTicketReservation();
+                    var totalPrice = ticketReservationManager.totalReservationCostWithVAT(event, ticketReservation, tickets);
+                    var calculator = new ReservationPriceCalculator(ticketReservation, totalPrice, tickets, event);
+                    return new MapSqlParameterSource("reservationId", calculator.reservation.getId())
+                        .addValue("srcPrice", calculator.getSrcPriceCts())
+                        .addValue("finalPrice", MonetaryUtil.unitToCents(calculator.getFinalPrice()))
+                        .addValue("discount", MonetaryUtil.unitToCents(calculator.getAppliedDiscount()))
+                        .addValue("vat", MonetaryUtil.unitToCents(calculator.getVAT()))
+                        .addValue("currencyCode", calculator.getCurrencyCode());
+                }).toArray(MapSqlParameterSource[]::new);
+            log.trace("updating {} reservations", reservationsToUpdate.length);
+            int[] results = jdbc.batchUpdate("update tickets_reservation set src_price_cts = :srcPrice, final_price_cts = :finalPrice, discount_cts = :discount, vat_cts = :vat, currency_code = :currencyCode where id = :reservationId", reservationsToUpdate);
+            int sum = IntStream.of(results).sum();
+            if(sum != reservationsToUpdate.length) {
+                log.warn("Expected {} reservations to be affected, actual number: {}", reservationsToUpdate.length, sum);
+            }
+        }
     }
 
     private void fillDefaultOptions() {
         transactionTemplate.execute(ts -> {
-            int count = jdbc.queryForObject("select count(*) from configuration where c_key = :key", new MapSqlParameterSource("key", ConfigurationKeys.GOOGLE_ANALYTICS_ANONYMOUS_MODE.getValue()), Integer.class);
-            if(count == 0) {
+            Integer count = jdbc.queryForObject("select count(*) from configuration where c_key = :key", new MapSqlParameterSource("key", ConfigurationKeys.GOOGLE_ANALYTICS_ANONYMOUS_MODE.getValue()), Integer.class);
+            if(count == null || count == 0) {
                 configurationRepository.insert(ConfigurationKeys.GOOGLE_ANALYTICS_ANONYMOUS_MODE.getValue(), "true", ConfigurationKeys.GOOGLE_ANALYTICS_ANONYMOUS_MODE.getDescription());
             }
             return null;
@@ -127,6 +182,7 @@ public class DataMigrator {
                 //migrate prices to new structure. This should be done for all events, regardless of the expiration date.
                 migratePrices(event.getId());
                 fixStuckTickets(event.getId());
+                createBillingDocuments(event);
 
                 if(alreadyDefined) {
                     EventMigration eventMigration = optional.get();
@@ -141,6 +197,21 @@ public class DataMigrator {
         }
     }
 
+    private void createBillingDocuments(Event event) {
+        if(event.getEnd().isAfter(ZonedDateTime.now(event.getZoneId()))) {
+            List<String> reservations = jdbc.queryForList("select id from tickets_reservation where event_id_fk = :eventId and status in ('OFFLINE_PAYMENT', 'COMPLETE') and invoice_number is not null and id not in(select distinct reservation_id_fk from billing_document where event_id_fk = :eventId)", new MapSqlParameterSource("eventId", event.getId()), String.class);
+            if(reservations.isEmpty()) {
+                return;
+            }
+            log.info("creating BillingDocument(s) for event {}", event.getDisplayName());
+            for (String reservationId : reservations) {
+                TicketReservation reservation = ticketReservationManager.findById(reservationId).orElseThrow(IllegalStateException::new);
+                ticketReservationManager.getOrCreateBillingDocumentModel(event, reservation, null);
+            }
+            log.info("checked {} BillingDocument(s) for event {}", reservations.size(), event.getDisplayName());
+        }
+    }
+
     void fixStuckTickets(int eventId) {
         List<Integer> ticketIds = jdbc.queryForList("select a.id from ticket a, tickets_reservation b where a.event_id = :eventId and a.status in('PENDING','TO_BE_PAID') and a.tickets_reservation_id = b.id and b.status = 'CANCELLED'", new MapSqlParameterSource("eventId", eventId), Integer.class);
         if(!ticketIds.isEmpty()) {
@@ -152,7 +223,7 @@ public class DataMigrator {
         }
     }
 
-    void fixCategoriesSize(Event event) {
+    void fixCategoriesSize(EventAndOrganizationId event) {
         ticketCategoryRepository.findByEventId(event.getId()).stream()
             .filter(TicketCategory::isBounded)
             .forEach(tc -> {
@@ -340,7 +411,7 @@ public class DataMigrator {
                     @Override
                     public Optional<PromoCodeDiscount> getDiscount() {
                         return Optional.ofNullable(ticket.get("discount_amount"))
-                            .map(amount -> new PromoCodeDiscount(0, "", eventId, null, null, null, (int) amount, PromoCodeDiscount.DiscountType.valueOf((String) ticket.get("discount_type")), "", null));
+                            .map(amount -> new PromoCodeDiscount(0, "", eventId, null, null, null, (int) amount, PromoCodeDiscount.DiscountType.valueOf((String) ticket.get("discount_type")), "", null, null, null, PromoCodeDiscount.CodeType.DISCOUNT, null));
                     }
                 });
             })
@@ -365,4 +436,5 @@ public class DataMigrator {
             })
             .collect(toList());
     }
+
 }

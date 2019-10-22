@@ -34,7 +34,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.MessageSource;
-import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
@@ -48,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
-@DisplayName("Waiting Queue Manager")
+@DisplayName("Waiting List Manager")
 public class WaitingQueueManagerTest {
 
     private WaitingQueueRepository waitingQueueRepository;
@@ -56,7 +55,6 @@ public class WaitingQueueManagerTest {
     private TicketRepository ticketRepository;
     private TicketCategoryRepository ticketCategoryRepository;
     private ConfigurationManager configurationManager;
-    private NamedParameterJdbcTemplate jdbc;
     private NotificationManager notificationManager;
     private TemplateManager templateManager;
     private MessageSource messageSource;
@@ -76,7 +74,6 @@ public class WaitingQueueManagerTest {
         ticketRepository = mock(TicketRepository.class);
         ticketCategoryRepository = mock(TicketCategoryRepository.class);
         configurationManager = mock(ConfigurationManager.class);
-        jdbc = mock(NamedParameterJdbcTemplate.class);
         notificationManager = mock(NotificationManager.class);
         templateManager = mock(TemplateManager.class);
         messageSource = mock(MessageSource.class);
@@ -85,7 +82,7 @@ public class WaitingQueueManagerTest {
         extensionManager = mock(ExtensionManager.class);
         event = mock(Event.class);
         when(event.getId()).thenReturn(eventId);
-        manager = new WaitingQueueManager(waitingQueueRepository, ticketRepository, ticketCategoryRepository, configurationManager, eventStatisticsManager, jdbc, notificationManager, templateManager, messageSource, organizationRepository, eventRepository, extensionManager);
+        manager = new WaitingQueueManager(waitingQueueRepository, ticketRepository, ticketCategoryRepository, configurationManager, eventStatisticsManager, notificationManager, templateManager, messageSource, organizationRepository, eventRepository, extensionManager);
     }
 
     @AfterEach
@@ -146,7 +143,7 @@ public class WaitingQueueManagerTest {
         when(event.getZoneId()).thenReturn(ZoneId.systemDefault());
         when(waitingQueueRepository.countWaitingPeople(eq(eventId))).thenReturn(1);
         when(ticketRepository.countWaiting(eq(eventId))).thenReturn(0);
-        when(configurationManager.getBooleanConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ENABLE_PRE_REGISTRATION), false)).thenReturn(true);
+        when(configurationManager.getBooleanConfigValue(Configuration.from(event, ENABLE_PRE_REGISTRATION), false)).thenReturn(true);
         when(ticketRepository.selectWaitingTicketsForUpdate(eventId, Ticket.TicketStatus.PRE_RESERVED.name(), 1)).thenReturn(Collections.singletonList(ticket));
         when(waitingQueueRepository.loadAllWaitingForUpdate(eventId)).thenReturn(Collections.singletonList(subscription));
         when(waitingQueueRepository.loadWaiting(eventId, 1)).thenReturn(Collections.singletonList(subscription));
@@ -157,7 +154,7 @@ public class WaitingQueueManagerTest {
         verify(ticketRepository).countWaiting(eq(eventId));
         verify(ticketRepository, never()).revertToFree(eq(eventId));
         verify(ticketRepository).countPreReservedTickets(eq(eventId));
-        verify(ticketRepository).preReserveTicket();
+        verify(ticketRepository).preReserveTicket(anyList());
         verify(ticketRepository).selectWaitingTicketsForUpdate(eq(eventId), anyString(), anyInt());
     }
 }

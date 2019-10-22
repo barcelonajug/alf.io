@@ -41,9 +41,11 @@ import alfio.util.EventUtil;
 import lombok.AllArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.time.DateUtils;
+import org.springframework.context.MessageSource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.ui.Model;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.BindingResult;
@@ -54,6 +56,7 @@ import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.*;
 import java.util.function.Predicate;
@@ -63,7 +66,6 @@ import static alfio.controller.support.SessionUtil.addToFlash;
 import static alfio.model.PromoCodeDiscount.categoriesOrNull;
 import static alfio.model.system.Configuration.getSystemConfiguration;
 import static alfio.model.system.ConfigurationKeys.RECAPTCHA_API_KEY;
-import static alfio.util.OptionalWrapper.optionally;
 
 @Controller
 @AllArgsConstructor
@@ -86,6 +88,7 @@ public class EventController {
     private final AdditionalServiceTextRepository additionalServiceTextRepository;
     private final TicketRepository ticketRepository;
     private final RecaptchaService recaptchaService;
+    private final MessageSource messageSource;
 
 
     @RequestMapping(value = "/", method = RequestMethod.HEAD)
@@ -134,18 +137,19 @@ public class EventController {
         
         SessionUtil.cleanupSession(request);
 
-        Optional<Event> optional = eventRepository.findOptionalByShortName(eventName);
-        if(!optional.isPresent()) {
+        Optional<EventAndOrganizationId> optional = eventRepository.findOptionalEventAndOrganizationIdByShortName(eventName);
+        if(optional.isEmpty()) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("event", ""));
         }
-        Event event = optional.get();
-        ZonedDateTime now = ZonedDateTime.now(event.getZoneId());
+        EventAndOrganizationId event = optional.get();
+        ZoneId eventZoneId = eventRepository.getZoneIdByEventId(event.getId());
+        ZonedDateTime now = ZonedDateTime.now(eventZoneId);
         Optional<String> maybeSpecialCode = Optional.ofNullable(StringUtils.trimToNull(promoCode));
-        Optional<SpecialPrice> specialCode = maybeSpecialCode.flatMap((trimmedCode) -> specialPriceRepository.getByCode(trimmedCode));
+        Optional<SpecialPrice> specialCode = maybeSpecialCode.flatMap(specialPriceRepository::getByCode);
         Optional<PromoCodeDiscount> promotionCodeDiscount = maybeSpecialCode.flatMap((trimmedCode) -> promoCodeRepository.findPromoCodeInEventOrOrganization(event.getId(), trimmedCode));
         
         if(specialCode.isPresent()) {
-            if (!optionally(() -> eventManager.getTicketCategoryById(specialCode.get().getTicketCategoryId(), event.getId())).isPresent()) {
+            if (eventManager.getOptionalByIdAndActive(specialCode.get().getTicketCategoryId(), event.getId()).isEmpty()) {
                 return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
             }
             
@@ -153,18 +157,18 @@ public class EventController {
                 return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
             }
             
-        } else if (promotionCodeDiscount.isPresent() && !promotionCodeDiscount.get().isCurrentlyValid(event.getZoneId(), now)) {
+        } else if (promotionCodeDiscount.isPresent() && !promotionCodeDiscount.get().isCurrentlyValid(eventZoneId, now)) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
         } else if (promotionCodeDiscount.isPresent() && isDiscountCodeUsageExceeded(promotionCodeDiscount.get())){
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("usage", ""));
-        } else if(!specialCode.isPresent() && !promotionCodeDiscount.isPresent()) {
+        } else if(promotionCodeDiscount.isEmpty()) {
             return ValidationResult.failed(new ValidationResult.ErrorDescriptor("promoCode", ""));
         }
 
-        if(maybeSpecialCode.isPresent() && !model.asMap().containsKey("hasErrors")) {
+        if(!model.asMap().containsKey("hasErrors")) {
             if(specialCode.isPresent()) {
                 SessionUtil.saveSpecialPriceCode(maybeSpecialCode.get(), request);
-            } else if (promotionCodeDiscount.isPresent()) {
+            } else {
                 SessionUtil.savePromotionCodeDiscount(maybeSpecialCode.get(), request);
             }
             return ValidationResult.success();
@@ -182,7 +186,7 @@ public class EventController {
 
         return eventRepository.findOptionalByShortName(eventName).filter(e -> e.getStatus() != Event.Status.DISABLED).map(event -> {
             Optional<String> maybeSpecialCode = SessionUtil.retrieveSpecialPriceCode(request);
-            Optional<SpecialPrice> specialCode = maybeSpecialCode.flatMap((trimmedCode) -> specialPriceRepository.getByCode(trimmedCode));
+            Optional<SpecialPrice> specialCode = maybeSpecialCode.flatMap(specialPriceRepository::getByCode);
 
             Optional<PromoCodeDiscount> promoCodeDiscount = SessionUtil.retrievePromotionCodeDiscount(request)
                 .flatMap((code) -> promoCodeRepository.findPromoCodeInEventOrOrganization(event.getId(), code));
@@ -193,11 +197,13 @@ public class EventController {
             Map<Integer, String> categoriesDescription = ticketCategoryDescriptionRepository.descriptionsByTicketCategory(ticketCategories.stream().map(TicketCategory::getId).collect(Collectors.toList()), locale.getLanguage());
 
             List<SaleableTicketCategory> saleableTicketCategories = ticketCategories.stream()
-                .filter((c) -> !c.isAccessRestricted() || (specialCode.filter(sc -> sc.getTicketCategoryId() == c.getId()).isPresent()))
+                .filter((c) -> !c.isAccessRestricted() || shouldDisplayRestrictedCategory(specialCode, c, promoCodeDiscount))
                 .map((m) -> {
                     int maxTickets = configurationManager.getIntConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), m.getId(), ConfigurationKeys.MAX_AMOUNT_OF_TICKETS_BY_RESERVATION), 5);
                     PromoCodeDiscount filteredPromoCode = promoCodeDiscount.filter(promoCode -> shouldApplyDiscount(promoCode, m)).orElse(null);
-                    if(filteredPromoCode != null && filteredPromoCode.getMaxUsage() != null) {
+                    if(specialCode.isPresent()) {
+                        maxTickets = Math.min(1, maxTickets);
+                    } else if(filteredPromoCode != null && filteredPromoCode.getMaxUsage() != null) {
                         maxTickets = filteredPromoCode.getMaxUsage() - promoCodeRepository.countConfirmedPromoCode(filteredPromoCode.getId(), categoriesOrNull(filteredPromoCode), null, categoriesOrNull(filteredPromoCode) != null ? "X" : null);
                     }
                     return new SaleableTicketCategory(m, categoriesDescription.getOrDefault(m.getId(), ""),
@@ -207,17 +213,15 @@ public class EventController {
                 .collect(Collectors.toList());
             //
 
-            final int orgId = event.getOrganizationId();
-            final int eventId = event.getId();
             Map<ConfigurationKeys, Optional<String>> geoInfoConfiguration = configurationManager.getStringConfigValueFrom(
-                Configuration.from(orgId, eventId, ConfigurationKeys.MAPS_PROVIDER),
-                Configuration.from(orgId, eventId, ConfigurationKeys.MAPS_CLIENT_API_KEY),
-                Configuration.from(orgId, eventId, ConfigurationKeys.MAPS_HERE_APP_ID),
-                Configuration.from(orgId, eventId, ConfigurationKeys.MAPS_HERE_APP_CODE));
+                Configuration.from(event, ConfigurationKeys.MAPS_PROVIDER),
+                Configuration.from(event, ConfigurationKeys.MAPS_CLIENT_API_KEY),
+                Configuration.from(event, ConfigurationKeys.MAPS_HERE_APP_ID),
+                Configuration.from(event, ConfigurationKeys.MAPS_HERE_APP_CODE));
 
             LocationDescriptor ld = LocationDescriptor.fromGeoData(event.getLatLong(), TimeZone.getTimeZone(event.getTimeZone()), geoInfoConfiguration);
 
-            final boolean hasAccessPromotions = configurationManager.getBooleanConfigValue(Configuration.from(orgId, eventId, ConfigurationKeys.DISPLAY_DISCOUNT_CODE_BOX), true) &&
+            final boolean hasAccessPromotions = configurationManager.getBooleanConfigValue(Configuration.from(event, ConfigurationKeys.DISPLAY_DISCOUNT_CODE_BOX), true) &&
                 (ticketCategoryRepository.countAccessRestrictedRepositoryByEventId(event.getId()) > 0 ||
                 promoCodeRepository.countByEventAndOrganizationId(event.getId(), event.getOrganizationId()) > 0);
 
@@ -234,17 +238,19 @@ public class EventController {
             List<SaleableAdditionalService> supplements = adjustIndex(0, notExpiredServices.stream().filter(a -> a.getType() == AdditionalService.AdditionalServiceType.SUPPLEMENT).collect(Collectors.toList()));
             List<SaleableAdditionalService> donations = adjustIndex(supplements.size(), notExpiredServices.stream().filter(a -> a.getType() == AdditionalService.AdditionalServiceType.DONATION).collect(Collectors.toList()));
 
+            boolean usePartnerCode = configurationManager.getBooleanConfigValue(Configuration.from(event, ConfigurationKeys.USE_PARTNER_CODE_INSTEAD_OF_PROMOTIONAL), false);
             model.addAttribute("event", eventDescriptor)//
                 .addAttribute("organization", organizationRepository.getById(event.getOrganizationId()))
                 .addAttribute("ticketCategories", validCategories)//
                 .addAttribute("expiredCategories", expiredCategories)//
-                .addAttribute("containsExpiredCategories", !expiredCategories.isEmpty())//
+                .addAttribute("containsExpiredCategories", configurationManager.getBooleanConfigValue(Configuration.from(event, ConfigurationKeys.DISPLAY_EXPIRED_CATEGORIES), true) && !expiredCategories.isEmpty())//
                 .addAttribute("showNoCategoriesWarning", validCategories.isEmpty())
                 .addAttribute("hasAccessPromotions", hasAccessPromotions)
                 .addAttribute("promoCode", specialCode.map(SpecialPrice::getCode).orElse(null))
                 .addAttribute("locationDescriptor", ld)
                 .addAttribute("pageTitle", "show-event.header.title")
-                .addAttribute("hasPromoCodeDiscount", promoCodeDiscount.isPresent())
+                .addAttribute("hasPromoCodeDiscount", promoCodeDiscount.filter(c -> c.getCodeType() == PromoCodeDiscount.CodeType.DISCOUNT).isPresent())
+                .addAttribute("hasAccessCode", promoCodeDiscount.filter(c -> c.getCodeType() == PromoCodeDiscount.CodeType.ACCESS).isPresent())
                 .addAttribute("promoCodeDiscount", promoCodeDiscount.orElse(null))
                 .addAttribute("displayWaitingQueueForm", EventUtil.displayWaitingQueueForm(event, saleableTicketCategories, configurationManager, eventStatisticsManager.noSeatsAvailable()))
                 .addAttribute("displayCategorySelectionForWaitingQueue", saleableTicketCategories.stream().filter(waitingQueueTargetCategory).count() > 1)
@@ -259,7 +265,9 @@ public class EventController {
                 .addAttribute("forwardButtonDisabled", saleableTicketCategories.stream().noneMatch(SaleableTicketCategory::getSaleable))
                 .addAttribute("useFirstAndLastName", event.mustUseFirstAndLastName())
                 .addAttribute("validityStart", event.getBegin())
-                .addAttribute("validityEnd", event.getEnd());
+                .addAttribute("validityEnd", event.getEnd())
+                .addAttribute("usePartnerCode", usePartnerCode)
+                .addAttribute("promoCodeDescription", messageSource.getMessage("show-event.promo-code-type."+(usePartnerCode ? "partner" : "promotional"), null, null, locale));
 
             if(configurationManager.isRecaptchaForTicketSelectionEnabled(event)) {
                 model.addAttribute("captchaForTicketSelectionEnabled", true)
@@ -269,6 +277,16 @@ public class EventController {
             model.asMap().putIfAbsent("hasErrors", false);//
             return "/event/show-event";
         }).orElse(REDIRECT + "/");
+    }
+
+    private boolean shouldDisplayRestrictedCategory(Optional<SpecialPrice> specialCode, TicketCategory c, Optional<PromoCodeDiscount> optionalPromoCode) {
+        if(optionalPromoCode.isPresent()) {
+            var promoCode = optionalPromoCode.get();
+            if(promoCode.getCodeType() == PromoCodeDiscount.CodeType.ACCESS && c.getId() == promoCode.getHiddenCategoryId()) {
+                return true;
+            }
+        }
+        return specialCode.filter(sc -> sc.getTicketCategoryId() == c.getId()).isPresent();
     }
 
 
@@ -293,6 +311,7 @@ public class EventController {
     }
 
     @RequestMapping(value = "/event/{eventName}/code/{code}", method = {RequestMethod.GET, RequestMethod.HEAD})
+    @Transactional
     public String handleCode(@PathVariable("eventName") String eventName, @PathVariable("code") String code, Model model, ServletWebRequest request, RedirectAttributes redirectAttributes, Locale locale) {
         String trimmedCode = StringUtils.trimToNull(code);
         return eventRepository.findOptionalByShortName(eventName).map(event -> {
@@ -302,25 +321,30 @@ public class EventController {
             if(res.isSuccess() && codeType == CodeType.PROMO_CODE_DISCOUNT) {
                 return redirectToEvent;
             } else if (codeType == CodeType.TICKET_CATEGORY_CODE) {
-                TicketCategory category = ticketCategoryRepository.findCodeInEvent(event.getId(), trimmedCode).get();
+                TicketCategory category = ticketCategoryRepository.findCodeInEvent(event.getId(), trimmedCode).orElseThrow();
                 if(!category.isAccessRestricted()) {
                     return makeSimpleReservation(eventName, request, redirectAttributes, locale, null, event, category.getId());
                 } else {
-                    Optional<SpecialPrice> specialPrice = specialPriceRepository.findActiveNotAssignedByCategoryId(category.getId()).stream().findFirst();
-                    if(!specialPrice.isPresent()) {
-                        return redirectToEvent;
-                    }
-                    savePromoCode(eventName, specialPrice.get().getCode(), model, request.getRequest());
-                    return makeSimpleReservation(eventName, request, redirectAttributes, locale, specialPrice.get().getCode(), event, category.getId());
+                    return initReservationForHiddenCategory(eventName, model, request, redirectAttributes, locale, event, redirectToEvent, category.getId());
                 }
             } else if (res.isSuccess() && codeType == CodeType.SPECIAL_PRICE) {
-                int ticketCategoryId = specialPriceRepository.getByCode(trimmedCode).get().getTicketCategoryId();
+                int ticketCategoryId = specialPriceRepository.getByCode(trimmedCode).orElseThrow().getTicketCategoryId();
                 return makeSimpleReservation(eventName, request, redirectAttributes, locale, trimmedCode, event, ticketCategoryId);
             } else {
                 return redirectToEvent;
             }
         }).orElse("redirect:/");
     }
+
+    private String initReservationForHiddenCategory(String eventName, Model model, ServletWebRequest request, RedirectAttributes redirectAttributes, Locale locale, Event event, String redirectToEvent, int categoryId) {
+        Optional<SpecialPrice> specialPrice = specialPriceRepository.findFirstActiveNotAssignedForUpdate(categoryId);
+        if(specialPrice.isEmpty()) {
+            return redirectToEvent;
+        }
+        savePromoCode(eventName, specialPrice.get().getCode(), model, request.getRequest());
+        return makeSimpleReservation(eventName, request, redirectAttributes, locale, specialPrice.get().getCode(), event, categoryId);
+    }
+
 
     private String makeSimpleReservation(String eventName, ServletWebRequest request, RedirectAttributes redirectAttributes, Locale locale, String trimmedCode, Event event, int ticketCategoryId) {
         ReservationForm form = new ReservationForm();
@@ -339,7 +363,7 @@ public class EventController {
                          @RequestParam(value = "ticketId", required = false) String ticketId,
                          HttpServletResponse response) throws IOException {
         Optional<Event> event = eventRepository.findOptionalByShortName(eventName);
-        if (!event.isPresent()) {
+        if (event.isEmpty()) {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;
         }
@@ -439,10 +463,13 @@ public class EventController {
     }
 
     private static boolean shouldApplyDiscount(PromoCodeDiscount promoCodeDiscount, TicketCategory ticketCategory) {
-        return promoCodeDiscount.getCategories().isEmpty() || promoCodeDiscount.getCategories().contains(ticketCategory.getId());
+        if(promoCodeDiscount.getCodeType() == PromoCodeDiscount.CodeType.DISCOUNT) {
+            return promoCodeDiscount.getCategories().isEmpty() || promoCodeDiscount.getCategories().contains(ticketCategory.getId());
+        }
+        return ticketCategory.isAccessRestricted() && ticketCategory.getId() == promoCodeDiscount.getHiddenCategoryId();
     }
 
-    private boolean isCaptchaInvalid(HttpServletRequest request, Event event) {
+    private boolean isCaptchaInvalid(HttpServletRequest request, EventAndOrganizationId event) {
         return configurationManager.isRecaptchaForTicketSelectionEnabled(event)
             && !recaptchaService.checkRecaptcha(request);
     }

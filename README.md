@@ -4,15 +4,16 @@ alf.io
 alf.io
 
 [![Build Status](http://img.shields.io/travis/alfio-event/alf.io/master.svg)](https://travis-ci.org/alfio-event/alf.io) [![Coverage Status](https://img.shields.io/coveralls/alfio-event/alf.io.svg)](https://coveralls.io/r/alfio-event/alf.io)
-
-## Warning
-
-As the work for Alf.io [v2](https://github.com/alfio-event/alf.io/milestones) has started, this branch may contain **unstable** and **untested** code. 
-If you want to build and deploy alf.io by yourself, we strongly suggest you to use the [1.x-maintenance](https://github.com/alfio-event/alf.io/tree/1.x-maintenance) branch.  
+[![Docker Hub Pulls](https://img.shields.io/docker/pulls/alfio/alf.io.svg)](https://hub.docker.com/r/alfio/alf.io/tags)
+[![Open Source Helpers](https://www.codetriage.com/exteso/alf.io/badges/users.svg)](https://www.codetriage.com/exteso/alf.io)
 
 ## Prerequisites
 
-You should have installed Java version 8 (either [Oracle's](http://www.oracle.com/technetwork/java/javase/downloads/index.html) or [OpenJDK](http://openjdk.java.net/install/)) in order to build and run alf.io. Please note that for the build process the JDK is required.
+You should have installed Java version **11** (e.g. [Oracle's](http://www.oracle.com/technetwork/java/javase/downloads/index.html), [OpenJDK](http://openjdk.java.net/install/), or any other distribution) in order to build and run alf.io. Please note that for the build process the JDK is required.
+
+Postgresql version 9.6 or later.
+
+Additionally, the database user that create and use the tables should not be a "SUPERUSER", or else the row security policy checks will not be applied.
 
 ## Run on your machine
 
@@ -33,11 +34,11 @@ You must specify a project property at the command line, such as
 ```
 The local "bootRun" task has the following prerequisites:
 
-- a PostgreSQL instance up and runnning on localhost:5432
+- a PostgreSQL (version 9.6 or later) instance up and runnning on localhost:5432
 - a _postgres_ user having password: _password_
 - a database named _alfio_
 
-once started, alf.io will create all the required tables on the database.
+once started, alf.io will create all the required tables on the database, and be available at http://localhost:8080/admin. You can login using the default Username _admin_ and the password which was printed on the console.
 
 Note: if you want to test without installing a pgsql instance, we have configured the following tasks:
 
@@ -97,7 +98,9 @@ Importing the Gradle project into Intellij and Eclipse both work.
 
 ## Docker
 
-alf.io can be run for development with Docker Compose:
+Container images are available on https://hub.docker.com/r/alfio/alf.io/tags.
+
+alf.io can also be run with Docker Compose:
 
     docker-compose up
 

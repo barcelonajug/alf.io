@@ -21,7 +21,7 @@ import alfio.manager.EventManager;
 import alfio.manager.support.CheckInStatistics;
 import alfio.manager.support.TicketAndCheckInResult;
 import alfio.manager.system.ConfigurationManager;
-import alfio.model.Event;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.FullTicketInfo;
 import alfio.model.system.Configuration;
 import alfio.model.system.ConfigurationKeys;
@@ -109,6 +109,7 @@ public class CheckInApiController {
         String username = principal.getName();
         String auditUser = StringUtils.defaultIfBlank(offlineUser, username);
         return ticketIdentifierCodes.stream()
+            .distinct()
             .map(t -> {
                 TicketAndCheckInResult res = checkInManager.checkIn(eventName, t.getIdentifier(),
                     Optional.ofNullable(t.getCode()),
@@ -176,7 +177,7 @@ public class CheckInApiController {
 
     @RequestMapping(value = "/check-in/{eventName}/label-layout", method = GET)
     public ResponseEntity<LabelLayout> getLabelLayoutForEvent(@PathVariable("eventName") String eventName, Principal principal) {
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .filter(checkInManager.isOfflineCheckInAndLabelPrintingEnabled())
             .map(this::parseLabelLayout)
             .orElseGet(() -> new ResponseEntity<>(HttpStatus.PRECONDITION_FAILED));
@@ -188,7 +189,7 @@ public class CheckInApiController {
                                               HttpServletResponse resp,
                                               Principal principal) {
         Date since = changedSince == null ? new Date(0) : DateUtils.addSeconds(new Date(changedSince), -1);
-        Optional<List<Integer>> ids = optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        Optional<List<Integer>> ids = eventManager.getOptionalEventAndOrganizationIdByName(eventName, principal.getName())
             .filter(checkInManager.isOfflineCheckInEnabled())
             .map(event -> checkInManager.getAttendeesIdentifiers(event, since, principal.getName()));
 
@@ -203,11 +204,12 @@ public class CheckInApiController {
                                                        Principal principal) {
 
         validateIdList(ids);
-        return optionally(() -> eventManager.getSingleEvent(eventName, principal.getName()))
+        return eventManager.getOptionalByName(eventName, principal.getName())
             .map(event -> {
                 Set<String> addFields = loadLabelLayout(event)
                     .map(layout -> {
                         Set<String> union = new HashSet<>(layout.content.thirdRow);
+                        union.addAll(layout.content.additionalRows);
                         union.addAll(layout.qrCode.additionalInfo);
                         if(additionalFields != null && !additionalFields.isEmpty()) {
                             union.addAll(additionalFields);
@@ -229,14 +231,14 @@ public class CheckInApiController {
         Validate.isTrue(ids.size() <= 200, "Cannot ask more than 200 ids");
     }
 
-    private ResponseEntity<LabelLayout> parseLabelLayout(Event event) {
+    private ResponseEntity<LabelLayout> parseLabelLayout(EventAndOrganizationId event) {
         return loadLabelLayout(event)
             .map(ResponseEntity::ok)
             .orElseGet(() -> new ResponseEntity<>(HttpStatus.NO_CONTENT));
     }
 
-    private Optional<LabelLayout> loadLabelLayout(Event event) {
-        return configurationManager.getStringConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ConfigurationKeys.LABEL_LAYOUT))
+    private Optional<LabelLayout> loadLabelLayout(EventAndOrganizationId event) {
+        return configurationManager.getStringConfigValue(Configuration.from(event, ConfigurationKeys.LABEL_LAYOUT))
             .flatMap(str -> optionally(() -> Json.fromJson(str, LabelLayout.class)));
     }
 
@@ -292,8 +294,8 @@ public class CheckInApiController {
                             @JsonProperty("checkbox") Boolean checkbox) {
                 this.firstRow = firstRow;
                 this.secondRow = secondRow;
-                this.thirdRow = thirdRow;
-                this.additionalRows = additionalRows;
+                this.thirdRow = thirdRow != null ? thirdRow : List.of();
+                this.additionalRows = additionalRows != null ? additionalRows : List.of();
                 this.checkbox = checkbox;
             }
         }
@@ -308,4 +310,5 @@ public class CheckInApiController {
             }
         }
     }
+
 }

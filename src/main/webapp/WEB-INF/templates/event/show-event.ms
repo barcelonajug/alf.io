@@ -3,12 +3,14 @@
 {{>/event/header}}
 
 <div class="row">
-    <div class="col-md-7">
+    <div class="{{#locationDescriptor.hasMapUrl}}col-md-7{{/locationDescriptor.hasMapUrl}}{{^locationDescriptor.hasMapUrl}}col-md-12{{/locationDescriptor.hasMapUrl}}">
         {{>/event/event-details}}
     </div>
+    {{#locationDescriptor.hasMapUrl}}
     <div class="col-md-5">
         <img src="{{locationDescriptor.mapUrl}}" class="img-responsive img-center">
     </div>
+    {{/locationDescriptor.hasMapUrl}}
 </div>
 
 <hr/>
@@ -16,24 +18,6 @@
 <div class="row wMarginBottom">
     <div class="col-xs-12 event-description">
         <div>{{#commonmark}}{{event.description}}{{/commonmark}}</div>
-    </div>
-</div>
-
-<div class="wizard2 center text-muted">
-    <div class="wizard2-current">
-        <div><span class="badge">1</span><span>{{#i18n}}breadcrumb.step1{{/i18n}}</span></div>
-        <div class="wizard2-line"></div>
-    </div>
-    <div>
-        <div><span class="badge">2</span><span>{{#i18n}}breadcrumb.step2{{/i18n}}</span></div>
-        <div class="wizard2-line"></div>
-    </div>
-    <div>
-        <div><span class="badge">3</span><span>{{#i18n}}breadcrumb.step3{{#event.free}}.free{{/event.free}}{{/i18n}}</span></div>
-        <div class="wizard2-line"></div>
-    </div>
-    <div>
-        <div><span class="badge">4</span><span>{{#i18n}}breadcrumb.step4{{/i18n}}</span></div>
     </div>
 </div>
 
@@ -169,7 +153,7 @@
         <ul class="list-group">
             <li class="list-group-item">
                 <div class="row">
-                    <div class="col-sm-7">{{#i18n}}show-event.promo-code-applied{{/i18n}} {{promoCodeDiscount.promoCode}}</div>
+                    <div class="col-sm-7">{{#i18n}}show-event.promo-code-applied [{{promoCodeDescription}}]{{/i18n}} {{promoCodeDiscount.promoCode}}</div>
                     <div class="col-sm-5">
                         {{#promoCodeDiscount.fixedAmount}}
                             {{#i18n}}show-event.promo-code-fixed-amount-discount [{{promoCodeDiscount.formattedDiscountAmount}} {{event.currency}}]{{/i18n}}
@@ -190,9 +174,9 @@
     <div class="panel panel-default">
         <div class="panel-heading" role="tab" id="headingOne">
             <h4 class="panel-title">
-                <i class="fa fa-gift"></i>
+                <i class="fa {{^usePartnerCode}}fa-gift{{/usePartnerCode}}{{#usePartnerCode}}fa-handshake-o{{/usePartnerCode}}"></i>
                 <a data-toggle="collapse" href="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
-                    {{#i18n}}show-event.promo-code{{/i18n}}
+                    {{#i18n}}show-event.promo-code [{{promoCodeDescription}}]{{/i18n}}
                 </a>
             </h4>
         </div>
@@ -200,7 +184,7 @@
             <div class="panel-body">
                 <div class="hidden text-danger text-center wMarginBottom" id="error-code-not-found">{{#i18n}}error.STEP_1_CODE_NOT_FOUND{{/i18n}}</div>
                 <div class="form-inline text-center">
-                    <label>{{#i18n}}show-event.promo-code-insert{{/i18n}} <input name="promoCodes" autocomplete="off" class="form-control" id="promo-code"></label>
+                    <label>{{#i18n}}show-event.promo-code-insert [{{promoCodeDescription}}]{{/i18n}} <input name="promoCodes" autocomplete="off" class="form-control" id="promo-code"></label>
                     <button class="btn btn-success" type="button" id="apply-promo-codes">{{#i18n}}show-event.promo-code.apply{{/i18n}}</button>
                 </div>
             </div>

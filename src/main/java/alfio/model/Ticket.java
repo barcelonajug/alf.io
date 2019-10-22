@@ -31,7 +31,7 @@ import java.util.Optional;
 import java.util.Set;
 
 @Getter
-public class Ticket {
+public class Ticket implements TicketInfoContainer {
 
     public enum TicketStatus {
         FREE, PENDING, TO_BE_PAID, ACQUIRED, CANCELLED, CHECKED_IN, EXPIRED, INVALIDATED, RELEASED, PRE_RESERVED
@@ -98,6 +98,7 @@ public class Ticket {
         this.extReference = extReference;
     }
     
+    @Override
     public boolean getAssigned() {
         return (StringUtils.isNotBlank(fullName) || (StringUtils.isNotBlank(firstName) && StringUtils.isNotBlank(lastName))) && StringUtils.isNotBlank(email);
     }
@@ -126,11 +127,12 @@ public class Ticket {
         return SOLD_STATUSES.contains(status);
     }
 
+    @Override
     public boolean isCheckedIn() {
         return status == TicketStatus.CHECKED_IN;
     }
 
-    private static String hmacSHA256Base64(String key, String code) {
+    public static String hmacSHA256Base64(String key, String code) {
         return Base64.getEncoder().encodeToString(new HmacUtils(HmacAlgorithms.HMAC_SHA_256, key).hmac(code));
     }
 

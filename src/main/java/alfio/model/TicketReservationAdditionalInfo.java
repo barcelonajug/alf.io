@@ -16,6 +16,7 @@
  */
 package alfio.model;
 
+import alfio.util.Json;
 import ch.digitalfondue.npjt.ConstructorAnnotationRowMapper.Column;
 import lombok.Getter;
 
@@ -31,6 +32,8 @@ public class TicketReservationAdditionalInfo {
     private final String billingAddressCity;
     private final Boolean validated;
     private final Boolean skipVatNr;
+    private final Boolean addCompanyBillingDetails;
+    private final TicketReservationInvoicingAdditionalInfo invoicingAdditionalInfo;
 
     public TicketReservationAdditionalInfo(@Column("billing_address_company") String billingAddressCompany,
                                            @Column("billing_address_line1") String billingAddressLine1,
@@ -38,14 +41,19 @@ public class TicketReservationAdditionalInfo {
                                            @Column("billing_address_zip") String billingAddressZip,
                                            @Column("billing_address_city") String billingAddressCity,
                                            @Column("validated_for_overview") Boolean validated,
-                                           @Column("skip_vat_nr") Boolean skipVatNr) {
+                                           @Column("skip_vat_nr") Boolean skipVatNr,
+                                           @Column("add_company_billing_details") Boolean addCompanyBillingDetails,
+                                           @Column("invoicing_additional_information") String invoicingAdditionalInformation) {
         this.billingAddressCompany = billingAddressCompany;
         this.billingAddressLine1 = billingAddressLine1;
         this.billingAddressLine2 = billingAddressLine2;
         this.billingAddressZip = billingAddressZip;
         this.billingAddressCity = billingAddressCity;
+        this.addCompanyBillingDetails = addCompanyBillingDetails;
         this.validated = validated;
         this.skipVatNr = skipVatNr;
+        this.invoicingAdditionalInfo = invoicingAdditionalInformation == null ? new TicketReservationInvoicingAdditionalInfo(null) :
+            Json.fromJson(invoicingAdditionalInformation, TicketReservationInvoicingAdditionalInfo.class);
     }
 
 

@@ -17,7 +17,7 @@
 package alfio.manager;
 
 import alfio.manager.system.ConfigurationManager;
-import alfio.model.Event;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.SpecialPrice;
 import alfio.model.TicketCategory;
 import alfio.model.system.Configuration;
@@ -80,10 +80,10 @@ public class SpecialPriceTokenGenerator {
         specialPriceRepository.findWaitingElementsForCategory(categoryId).forEach(this::generateCode);
     }
 
-    private void generateCode(SpecialPrice specialPrice) {
+    private void generateCode(SpecialPrice.SpecialPriceTicketCategoryId specialPrice) {
 
         TicketCategory ticketCategory = ticketCategoryRepository.getByIdAndActive(specialPrice.getTicketCategoryId()).orElseThrow(IllegalStateException::new);
-        Event event = eventRepository.findById(ticketCategory.getEventId());
+        EventAndOrganizationId event = eventRepository.findEventAndOrganizationIdById(ticketCategory.getEventId());
         int maxLength = configurationManager.getIntConfigValue(Configuration.from(event.getOrganizationId(), event.getId(), ticketCategory.getId(), ConfigurationKeys.SPECIAL_PRICE_CODE_LENGTH), 6);
 
         while (true) {

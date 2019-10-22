@@ -20,7 +20,7 @@ import alfio.controller.decorator.EventDescriptor;
 import alfio.manager.i18n.I18nManager;
 import alfio.manager.system.ConfigurationManager;
 import alfio.model.ContentLanguage;
-import alfio.model.Event;
+import alfio.model.EventAndOrganizationId;
 import alfio.model.system.Configuration.ConfigurationPathKey;
 import alfio.model.system.ConfigurationKeys;
 import alfio.util.MustacheCustomTagInterceptor;
@@ -120,7 +120,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
         registry.addInterceptor(getLocaleChangeInterceptor());
         registry.addInterceptor(getEventLocaleSetterInterceptor());
         registry.addInterceptor(getTemplateMessagesInterceptor());
-        registry.addInterceptor(new MustacheCustomTagInterceptor());
+        registry.addInterceptor(new MustacheCustomTagInterceptor(configurationManager));
         registry.addInterceptor(getCsrfInterceptor());
         registry.addInterceptor(getCSPInterceptor());
         registry.addInterceptor(getDefaultTemplateObjectsFiller());
@@ -130,14 +130,14 @@ public class MvcConfiguration implements WebMvcConfigurer {
     public HandlerInterceptor getEventLocaleSetterInterceptor() {
         return new HandlerInterceptorAdapter() {
             @Override
-            public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) throws Exception {
+            public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
 
                 if(handler instanceof HandlerMethod) {
                     HandlerMethod handlerMethod = ((HandlerMethod) handler);
                     RequestMapping reqMapping = handlerMethod.getMethodAnnotation(RequestMapping.class);
 
                     //check if the request mapping value has the form "/event/{something}"
-                    Pattern eventPattern = Pattern.compile("^/event/\\{(\\w+)}/{0,1}.*");
+                    Pattern eventPattern = Pattern.compile("^/event/\\{(\\w+)}/?.*");
                     if (reqMapping != null && reqMapping.value().length == 1 && eventPattern.matcher(reqMapping.value()[0]).matches()) {
 
                         Matcher m = eventPattern.matcher(reqMapping.value()[0]);
@@ -158,7 +158,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
                                 String eventName = Optional.ofNullable(((Map<String, Object>)request.getAttribute(HandlerMapping.URI_TEMPLATE_VARIABLES_ATTRIBUTE)).get(val)).orElse("").toString();
 
 
-                                LocaleResolver resolver = RequestContextUtils.getLocaleResolver(request);
+                                LocaleResolver resolver = Objects.requireNonNull(RequestContextUtils.getLocaleResolver(request));
                                 Locale locale = resolver.resolveLocale(request);
                                 List<ContentLanguage> cl = i18nManager.getEventLanguages(eventName);
 
@@ -182,7 +182,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
     public HandlerInterceptorAdapter getDefaultTemplateObjectsFiller() {
         return new HandlerInterceptorAdapter() {
             @Override
-            public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) throws Exception {
+            public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) {
                 Optional.ofNullable(modelAndView)
                     .filter(mv -> !StringUtils.startsWith(mv.getViewName(), "redirect:"))
                     .ifPresent(mv -> {
@@ -205,9 +205,9 @@ public class MvcConfiguration implements WebMvcConfigurer {
 
                         modelMap.putIfAbsent("event", null);
                         modelMap.putIfAbsent("pageTitle", "empty");
-                        Event event = modelMap.get("event") == null ? null : modelMap.get("event") instanceof Event ? (Event) modelMap.get("event") : ((EventDescriptor) modelMap.get("event")).getEvent();
+                        EventAndOrganizationId event = modelMap.get("event") == null ? null : modelMap.get("event") instanceof EventAndOrganizationId ? (EventAndOrganizationId) modelMap.get("event") : ((EventDescriptor) modelMap.get("event")).getEvent();
                         ConfigurationPathKey googleAnalyticsKey = Optional.ofNullable(event)
-                            .map(e -> alfio.model.system.Configuration.from(e.getOrganizationId(), e.getId(), GOOGLE_ANALYTICS_KEY))
+                            .map(e -> alfio.model.system.Configuration.from(e, GOOGLE_ANALYTICS_KEY))
                             .orElseGet(() -> alfio.model.system.Configuration.getSystemConfiguration(GOOGLE_ANALYTICS_KEY));
                         modelMap.putIfAbsent("analyticsEnabled", StringUtils.isNotBlank(configurationManager.getStringConfigValue(googleAnalyticsKey, "")));
 
@@ -217,7 +217,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
                             modelMap.putIfAbsent("paypalTestPassword", configurationManager.getStringConfigValue(alfio.model.system.Configuration.getSystemConfiguration(PAYPAL_DEMO_MODE_PASSWORD), "<missing>"));
                         }
 
-                        modelMap.putIfAbsent(TemplateManager.VAT_TRANSLATION_TEMPLATE_KEY, TemplateManager.getVATString(event, messageSource, RequestContextUtils.getLocaleResolver(request).resolveLocale(request), configurationManager));
+                        modelMap.putIfAbsent(TemplateManager.VAT_TRANSLATION_TEMPLATE_KEY, TemplateManager.getVATString(event, messageSource, Objects.requireNonNull(RequestContextUtils.getLocaleResolver(request)).resolveLocale(request), configurationManager));
                 });
             }
         };
@@ -234,7 +234,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
         return new HandlerInterceptorAdapter() {
             @Override
             public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler,
-                    ModelAndView modelAndView) throws Exception {
+                    ModelAndView modelAndView) {
 
                 //
                 String reportUri = "";
@@ -253,15 +253,17 @@ public class MvcConfiguration implements WebMvcConfigurer {
 
                 // http://www.html5rocks.com/en/tutorials/security/content-security-policy/
                 // lockdown policy
+
                 response.addHeader("Content-Security-Policy", "default-src 'none'; "//block all by default
-                        + " script-src 'self' https://checkout.stripe.com/ https://api.stripe.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
+                        + " script-src 'self' https://js.stripe.com https://checkout.stripe.com/ https://m.stripe.network https://api.stripe.com/ https://ssl.google-analytics.com/ https://www.google.com/recaptcha/api.js https://www.gstatic.com/recaptcha/api2/ https://maps.googleapis.com/;"//
                         + " style-src 'self' 'unsafe-inline';" // unsafe-inline for style is acceptable...
                         + " img-src 'self' https: data:;"//
-                        + " child-src 'self';"//webworker
-                        + " frame-src 'self' https://checkout.stripe.com https://www.google.com;"
+                        + " child-src 'self';"
+                        + " worker-src 'self';"//webworker
+                        + " frame-src 'self' https://js.stripe.com https://checkout.stripe.com https://m.stripe.network https://m.stripe.com https://www.google.com;"
                         + " font-src 'self';"//
                         + " media-src blob: 'self';"//for loading camera api
-                        + " connect-src 'self' https://checkout.stripe.com https://maps.googleapis.com/ https://geocoder.cit.api.here.com;" //<- currently stripe.js use jsonp but if they switch to xmlhttprequest+cors we will be ready
+                        + " connect-src 'self' https://checkout.stripe.com https://m.stripe.network https://m.stripe.com https://maps.googleapis.com/ https://geocoder.cit.api.here.com;" //<- currently stripe.js use jsonp but if they switch to xmlhttprequest+cors we will be ready
                         + reportUri);
             }
         };
@@ -272,7 +274,7 @@ public class MvcConfiguration implements WebMvcConfigurer {
     public HandlerInterceptor getCsrfInterceptor() {
         return new HandlerInterceptorAdapter() {
             @Override
-            public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) throws Exception {
+            public void postHandle(HttpServletRequest request, HttpServletResponse response, Object handler, ModelAndView modelAndView) {
                 Optional.ofNullable(modelAndView).ifPresent(mv -> mv.addObject(WebSecurityConfig.CSRF_PARAM_NAME, request.getAttribute(CsrfToken.class.getName())));
             }
         };

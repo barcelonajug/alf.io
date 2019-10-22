@@ -23,6 +23,8 @@ import ch.digitalfondue.npjt.Bind;
 import ch.digitalfondue.npjt.Query;
 import ch.digitalfondue.npjt.QueryRepository;
 
+import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -33,18 +35,18 @@ public interface AuditingRepository {
     @Query("insert into auditing(reservation_id, user_id, event_id, event_type, event_time, entity_type, entity_id, modifications) " +
         " values (:reservationId, :userId, :eventId, :eventType, :eventTime, :entityType, :entityId, :modifications)")
     int insert(@Bind("reservationId") String reservationId, @Bind("userId") Integer userId,
-               @Bind("eventId") Integer eventId,
+               @Bind("eventId") int eventId,
                @Bind("eventType") Audit.EventType eventType, @Bind("eventTime") Date eventTime,
                @Bind("entityType") Audit.EntityType entityType, @Bind("entityId") String entityId,
                @Bind("modifications") String modifications);
 
 
-    default int insert(String reservationId, Integer userId, Integer eventId, Audit.EventType eventType, Date eventTime, Audit.EntityType entityType,
+    default int insert(String reservationId, Integer userId, int eventId, Audit.EventType eventType, Date eventTime, Audit.EntityType entityType,
                        String entityId) {
         return this.insert(reservationId, userId, eventId, eventType, eventTime, entityType, entityId, (String) null);
     }
 
-    default int insert(String reservationId, Integer userId, Integer eventId, Audit.EventType eventType, Date eventTime, Audit.EntityType entityType,
+    default int insert(String reservationId, Integer userId, int eventId, Audit.EventType eventType, Date eventTime, Audit.EntityType entityType,
                        String entityId, List<Map<String, Object>> modifications) {
         String modificationJson = modifications == null ? null : Json.toJson(modifications);
         return this.insert(reservationId, userId, eventId, eventType, eventTime, entityType, entityId, modificationJson);
@@ -56,6 +58,9 @@ public interface AuditingRepository {
 
     @Query("select count(*) from auditing_user where reservation_id = :reservationId and event_type = :eventType")
     Integer countAuditsOfTypeForReservation(@Bind("reservationId") String reservationId, @Bind("eventType") Audit.EventType eventType);
+
+    @Query("select count(*) from auditing_user where reservation_id = :reservationId and event_type in (:eventTypes) and date_trunc('day', :referenceDate::timestamp) = date_trunc('day', event_time)")
+    Integer countAuditsOfTypesInTheSameDay(@Bind("reservationId") String reservationId, @Bind("eventTypes") Collection<String> eventTypes, @Bind("referenceDate") ZonedDateTime date);
 
     @Query("insert into auditing(reservation_id, user_id, event_id, event_type, event_time, entity_type, entity_id, modifications) " +
         " select tickets_reservation_id, null, event_id, 'UPDATE_TICKET_CATEGORY', current_timestamp, 'TICKET', concat('', id), null from ticket where category_id = :ticketCategoryId and tickets_reservation_id is not null")
